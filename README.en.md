@@ -8,6 +8,8 @@ A **system-level** Telegram console for DSH: install it once and the whole DeepS
 - Mounted once: a process-level singleton that does not follow agent presets, so every session shares the same bot.
 - It thinks, but does not spam: **reasoning never reaches the screen by default**. Telegram only shows the “typing…” status, then the final answer.
 
+> ⚠️ This plugin can run commands, power off the host and write files. Configure the `allowedUserIds` / `allowedChatIds` allowlists before going live, and turn off what you do not need via `allowShell` / `allowTools` / `allowFs` / `allowPower`.
+
 ## Install
 
 ```text

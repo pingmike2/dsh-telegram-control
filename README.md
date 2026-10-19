@@ -8,6 +8,8 @@ DSH 的**系统级** Telegram 控制台：装上之后，整个 DeepSeek Harness
 - 只挂一次：进程级单例，不跟随 agent preset，所有 Session 共用同一个 Bot。
 - 会思考，但不吵人：**思考过程默认不上屏**，Telegram 侧只显示「正在输入…」状态，只把最终回答发出来。
 
+> ⚠️ 这个插件能远程执行命令、关机、改文件。上线前务必配好 `allowedUserIds` / `allowedChatIds` 白名单，不用的能力用 `allowShell` / `allowTools` / `allowFs` / `allowPower` 关掉。
+
 ## 安装
 
 ```text
