@@ -27,6 +27,14 @@
     "cordis-plugin"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pingmike2/dsh-telegram-control.git"
+  },
+  "bugs": {
+    "url": "https://github.com/pingmike2/dsh-telegram-control/issues"
+  },
+  "homepage": "https://github.com/pingmike2/dsh-telegram-control#readme",
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
