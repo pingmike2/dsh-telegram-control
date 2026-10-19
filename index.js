@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url'
 /** Cordis 插件名（出现在 Loader 诊断里）。 */
 export const name = 'telegram-control'
 /** 插件版本。 */
-export const version = '1.2.0'
+export const version = '1.3.0'
 
 /** 所有能力都在调用时按需通过 `ctx.get()` 解析，因此不声明硬依赖。 */
 export const inject = []
@@ -50,6 +50,7 @@ const DEFAULTS = {
   answerQuestions: false,
   forwardReasoning: false,
   thinkingStatus: 'typing',
+  format: 'markdown',
   approvalTimeoutSeconds: 120,
   commandTimeoutSeconds: 120,
   allowShell: true,
@@ -221,6 +222,163 @@ function chunkText(text, max) {
   return chunks
 }
 
+// ─────────────────── Markdown → Telegram MarkdownV2 ───────────────────
+
+/** MarkdownV2 里必须转义的保留字符。 */
+const MDV2_SPECIAL = /[_*[\]()~`>#+\-=|{}.!\\]/g
+
+function escapeMdV2(text) {
+  return String(text ?? '').replace(MDV2_SPECIAL, (ch) => `\\${ch}`)
+}
+
+/** 行内语法：代码 > 粗体 > 删除线 > 链接 > 斜体，其余一律转义。 */
+function inlineMdV2(text) {
+  const s = String(text ?? '')
+  let out = ''
+  let buffer = ''
+  let i = 0
+  const flush = () => {
+    if (buffer) {
+      out += escapeMdV2(buffer)
+      buffer = ''
+    }
+  }
+  while (i < s.length) {
+    const ch = s[i]
+    if (ch === '`') {
+      const close = s.indexOf('`', i + 1)
+      if (close > i) {
+        flush()
+        out += `\`${s.slice(i + 1, close).replace(/[\\`]/g, (c) => `\\${c}`)}\``
+        i = close + 1
+        continue
+      }
+    }
+    if (s.startsWith('**', i) || s.startsWith('__', i)) {
+      const mark = s.slice(i, i + 2)
+      const close = s.indexOf(mark, i + 2)
+      if (close > i + 2) {
+        flush()
+        out += `*${inlineMdV2(s.slice(i + 2, close))}*`
+        i = close + 2
+        continue
+      }
+    }
+    if (s.startsWith('~~', i)) {
+      const close = s.indexOf('~~', i + 2)
+      if (close > i + 2) {
+        flush()
+        out += `~${inlineMdV2(s.slice(i + 2, close))}~`
+        i = close + 2
+        continue
+      }
+    }
+    if (ch === '[') {
+      const link = /^\[([^\]\n]*)\]\(([^()\s]+)\)/.exec(s.slice(i))
+      if (link) {
+        flush()
+        out += `[${inlineMdV2(link[1])}](${link[2].replace(/[)\\]/g, (c) => `\\${c}`)})`
+        i += link[0].length
+        continue
+      }
+    }
+    if (ch === '*' || ch === '_') {
+      const close = s.indexOf(ch, i + 1)
+      if (close > i + 1 && !/\s/.test(s[i + 1])) {
+        flush()
+        out += `_${inlineMdV2(s.slice(i + 1, close))}_`
+        i = close + 1
+        continue
+      }
+    }
+    buffer += ch
+    i += 1
+  }
+  flush()
+  return out
+}
+
+/**
+ * 整段 Markdown → MarkdownV2：标题加粗、列表换项目符号、表格和代码块进等宽块。
+ * 内容按行处理，任何解析不了的东西都会退化成转义后的纯文本，不会丢字。
+ */
+function markdownToMdV2(text) {
+  const lines = String(text ?? '').replace(/\r\n/g, '\n').split('\n')
+  const out = []
+  let inFence = false
+  let inTable = false
+  const closeTable = () => {
+    if (inTable) {
+      out.push('```')
+      inTable = false
+    }
+  }
+  for (const line of lines) {
+    const fence = /^\s*```+\s*([\w+#.-]*)\s*$/.exec(line)
+    if (fence) {
+      closeTable()
+      inFence = !inFence
+      if (inFence) out.push(fence[1] ? `\`\`\`${fence[1]}` : '```')
+      else out.push('```')
+      continue
+    }
+    if (inFence) {
+      out.push(line.replace(/[\\`]/g, (c) => `\\${c}`))
+      continue
+    }
+    if (/^\s*\|.*\|\s*$/.test(line)) {
+      if (!inTable) {
+        out.push('```')
+        inTable = true
+      }
+      out.push(line.replace(/[\\`]/g, (c) => `\\${c}`))
+      continue
+    }
+    closeTable()
+    if (line.trim() === '') {
+      out.push('')
+      continue
+    }
+    const heading = /^\s{0,3}(#{1,6})\s+(.*)$/.exec(line)
+    if (heading) {
+      out.push(`*${inlineMdV2(heading[2].trim())}*`)
+      continue
+    }
+    const quote = /^\s*>\s?(.*)$/.exec(line)
+    if (quote) {
+      out.push(`>${inlineMdV2(quote[1])}`)
+      continue
+    }
+    const bullet = /^(\s*)[-*+]\s+(.*)$/.exec(line)
+    if (bullet) {
+      out.push(`${bullet[1]}• ${inlineMdV2(bullet[2])}`)
+      continue
+    }
+    const ordered = /^(\s*)(\d+)[.)]\s+(.*)$/.exec(line)
+    if (ordered) {
+      out.push(`${ordered[1]}${ordered[2]}\\. ${inlineMdV2(ordered[3])}`)
+      continue
+    }
+    if (/^\s*([-*_])\1{2,}\s*$/.test(line)) {
+      out.push('──────────')
+      continue
+    }
+    out.push(inlineMdV2(line))
+  }
+  if (inTable) out.push('```')
+  if (inFence) out.push('```')
+  return out.join('\n')
+}
+
+/** 被切断的代码块要补围栏，否则 Telegram 直接拒绝解析。 */
+function rebalanceFence(chunk, carryOpen) {
+  let text = carryOpen ? `\`\`\`\n${chunk}` : chunk
+  const markers = (text.match(/^\s*```/gm) || []).length
+  const stillOpen = markers % 2 === 1
+  if (stillOpen) text += '\n```'
+  return { text, carryOpen: stillOpen }
+}
+
 function shortId(id) {
   const value = String(id ?? '')
   return value.length <= 14 ? value : `${value.slice(0, 12)}…`
@@ -273,6 +431,7 @@ function normalizeConfig(staticConfig, fileConfig) {
     thinkingStatus: ['typing', 'message', 'off'].includes(String(merged.thinkingStatus))
       ? String(merged.thinkingStatus)
       : 'typing',
+    format: ['markdown', 'plain'].includes(String(merged.format)) ? String(merged.format) : 'markdown',
     approvalTimeoutSeconds: clampInt(merged.approvalTimeoutSeconds, 10, 3600, DEFAULTS.approvalTimeoutSeconds),
     commandTimeoutSeconds: clampInt(merged.commandTimeoutSeconds, 1, 3600, DEFAULTS.commandTimeoutSeconds),
     allowShell: merged.allowShell !== false,
@@ -493,20 +652,50 @@ async function tgCall(rt, method, params, signal) {
   return data.result
 }
 
+/** 一条消息的投递：优先 MarkdownV2，解析失败就退回纯文本，绝不丢消息。 */
+async function postMessage(rt, payload, method = 'sendMessage') {
+  const text = String(payload.text ?? '')
+  if (rt.cfg.format !== 'plain' && text.trim()) {
+    const rendered = markdownToMdV2(text)
+    if (rendered && rendered !== text) {
+      try {
+        return await tgCall(rt, method, { ...payload, text: rendered, parse_mode: 'MarkdownV2' })
+      } catch (error) {
+        const message = String(error?.message ?? error)
+        if (!/parse|entit|entity|unsupported/i.test(message)) {
+          rt.logger.warn(`telegram-control: ${method} 失败 ${message}`)
+          return undefined
+        }
+        rt.logger.warn(`telegram-control: MarkdownV2 解析失败，改为纯文本 (${clip(message, 120)})`)
+      }
+    }
+  }
+  try {
+    return await tgCall(rt, method, payload)
+  } catch (error) {
+    rt.logger.warn(`telegram-control: ${method} 失败 ${error?.message || error}`)
+    return undefined
+  }
+}
+
 async function sendText(rt, chatId, text, extra) {
-  const chunks = chunkText(text, rt.cfg.maxMessageChars)
+  const rich = rt.cfg.format !== 'plain'
+  const limit = rich ? Math.min(3000, rt.cfg.maxMessageChars) : rt.cfg.maxMessageChars
+  const chunks = chunkText(text, limit)
   if (chunks.length === 0) return undefined
   let last
+  let carryOpen = false
   for (let index = 0; index < chunks.length; index += 1) {
     if (rt.ac.signal.aborted) return last
-    const payload = { chat_id: chatId, text: chunks[index], disable_web_page_preview: true }
-    if (index === chunks.length - 1 && extra) Object.assign(payload, extra)
-    try {
-      last = await tgCall(rt, 'sendMessage', payload)
-    } catch (error) {
-      rt.logger.warn(`telegram-control: sendMessage 失败 ${error?.message || error}`)
-      return last
+    let body = chunks[index]
+    if (rich) {
+      const balanced = rebalanceFence(body, carryOpen)
+      body = balanced.text
+      carryOpen = balanced.carryOpen
     }
+    const payload = { chat_id: chatId, text: body, disable_web_page_preview: true }
+    if (index === chunks.length - 1 && extra) Object.assign(payload, extra)
+    last = (await postMessage(rt, payload)) ?? last
   }
   return last
 }
@@ -515,12 +704,7 @@ async function editMessage(rt, chatId, messageId, text, extra) {
   if (!messageId) return undefined
   const payload = { chat_id: chatId, message_id: messageId, text: clip(text, rt.cfg.maxMessageChars) }
   if (extra) Object.assign(payload, extra)
-  try {
-    return await tgCall(rt, 'editMessageText', payload)
-  } catch (error) {
-    rt.logger.warn(`telegram-control: editMessageText 失败 ${error?.message || error}`)
-    return undefined
-  }
+  return postMessage(rt, payload, 'editMessageText')
 }
 
 async function sendTyping(rt, chatId) {
@@ -591,6 +775,19 @@ function renderConfigPage(values, csrf, message, configPath) {
       )
       .join('')
   }
+  const formatOptionsHtml = (current) => {
+    const value = ['markdown', 'plain'].includes(String(current)) ? String(current) : 'markdown'
+    const rows = [
+      ['markdown', 'Markdown（渲染标题 / 表格 / 代码块，推荐）'],
+      ['plain', '纯文本（原样输出 markdown 源码）'],
+    ]
+    return rows
+      .map(
+        ([id, label]) =>
+          `<option value="${id}"${id === value ? ' selected' : ''}>${escapeHtml(label)}</option>`,
+      )
+      .join('')
+  }
   return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -648,6 +845,9 @@ ${message ? `<p class="msg">${escapeHtml(message)}</p>` : ''}
     <label class="check"><input type="checkbox" name="forwardReasoning"${checked(values.forwardReasoning)}> 把模型思考过程也发到 Telegram（默认关闭）</label>
     <label>思考时的状态提示</label>
     <select name="thinkingStatus">${thinkingOptionsHtml(values.thinkingStatus)}</select>
+    <label>消息格式</label>
+    <select name="format">${formatOptionsHtml(values.format)}</select>
+    <p class="hint">markdown = 标题加粗、表格与代码块等宽、保留字符自动转义；解析失败会自动退回纯文本。</p>
     <label class="check"><input type="checkbox" name="allowShell"${checked(values.allowShell)}> 允许 /shell</label>
     <label class="check"><input type="checkbox" name="allowTools"${checked(values.allowTools)}> 允许 /tool</label>
     <label class="check"><input type="checkbox" name="allowFs"${checked(values.allowFs)}> 允许 /read /write /ls</label>
@@ -735,6 +935,9 @@ function startConfigServer(options) {
             answerQuestions: form.has('answerQuestions'),
             forwardReasoning: form.has('forwardReasoning'),
             thinkingStatus: String(form.get('thinkingStatus') ?? 'typing'),
+            format: ['markdown', 'plain'].includes(String(form.get('format')))
+              ? String(form.get('format'))
+              : 'markdown',
             allowShell: form.has('allowShell'),
             allowTools: form.has('allowTools'),
             allowFs: form.has('allowFs'),
@@ -1407,6 +1610,30 @@ function describeTurnEnd(reason) {
   }
 }
 
+/**
+ * Host 的 `sessionController.prompt(request, signal)` 会直接 `signal.throwIfAborted()`，
+ * 第二个参数缺了就是 `Cannot read properties of undefined (reading 'throwIfAborted')`。
+ * 这里给它一个「超时 + 跟随运行时关闭」的信号。
+ */
+function admissionSignal(rt, timeoutMs = 20_000) {
+  const controller = new AbortController()
+  const abort = (reason) => {
+    if (!controller.signal.aborted) controller.abort(reason)
+  }
+  const timer = setTimeout(() => abort(new Error('下发超时（Host 未在 20 秒内接收）')), timeoutMs)
+  timer.unref?.()
+  const onRuntimeAbort = () => abort(rt.ac.signal.reason ?? new Error('插件已停止'))
+  if (rt.ac.signal.aborted) onRuntimeAbort()
+  else rt.ac.signal.addEventListener('abort', onRuntimeAbort, { once: true })
+  return {
+    signal: controller.signal,
+    dispose() {
+      clearTimeout(timer)
+      rt.ac.signal.removeEventListener('abort', onRuntimeAbort)
+    },
+  }
+}
+
 async function promptSession(rt, chat, text) {
   const controller = sessionController(rt)
   if (!controller) {
@@ -1422,16 +1649,23 @@ async function promptSession(rt, chat, text) {
   }
   ensureFollower(rt, chat)
   if (rt.cfg.thinkingStatus !== 'off') await sendTyping(rt, chat.id)
+  const admission = admissionSignal(rt)
   try {
-    await controller.prompt({
-      requestId: randomUUID(),
-      sessionId,
-      mode: 'queue',
-      content: [{ type: 'text', text }],
-      clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
-    })
+    await controller.prompt(
+      {
+        requestId: randomUUID(),
+        sessionId,
+        mode: 'queue',
+        content: [{ type: 'text', text }],
+        clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+      },
+      admission.signal,
+    )
   } catch (error) {
-    await sendText(rt, chat.id, `❌ 下发失败：${error?.message || error}\n会话：${sessionId}`)
+    const reason = error?.message || String(error)
+    await sendText(rt, chat.id, `❌ 下发失败：${reason}\n会话：${sessionId}`)
+  } finally {
+    admission.dispose()
   }
 }
 
@@ -2927,6 +3161,7 @@ async function ensureTemplateConfig(configPath, staticConfig) {
       agentPreset: '',
       lang: 'zh',
       thinkingStatus: 'typing',
+      format: 'markdown',
       answerApprovals: false,
       answerQuestions: false,
     })

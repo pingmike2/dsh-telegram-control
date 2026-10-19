@@ -39,7 +39,8 @@ Fill in `botToken`, `allowedUserIds` / `allowedChatIds`, proxy and toggles (incl
   "answerApprovals": false,
   "answerQuestions": false,
   "forwardReasoning": false,
-  "thinkingStatus": "typing"
+  "thinkingStatus": "typing",
+  "format": "markdown"
 }
 ```
 
@@ -64,10 +65,13 @@ While the model reasons it emits a flood of `reasoning` deltas. Those **never re
 
 **Tool calls stay off screen as well**: `tool/call` (the `🔧 edit` / `🔧 pwsh` kind) only refreshes the typing indicator and sends no message at all; `tool/result` only reports **failures** as a single `⚠️ Tool failed: …` line. On your phone you therefore always see: status moving → final answer.
 
+Replies are rendered as Markdown: headings become bold, tables and fenced code land in monospace blocks, and reserved characters such as `*` `_` `.` are escaped instead of leaking into the chat as raw source. If Telegram ever rejects a message, it is resent as plain text.
+
 | Toggle | Default | Meaning |
 |---|---|---|
 | `forwardReasoning` | `false` | After `/reasoning on`, reasoning is also forwarded (prefixed with `🧠 Thinking`) — useful when debugging |
 | `thinkingStatus` | `typing` | `typing` (status only) / `message` / `off` (nothing at all) |
+| `format` | `markdown` | Outbound format: `markdown` renders headings / tables / code blocks and escapes reserved characters; `plain` sends the source verbatim. Unparseable messages are resent as plain text, never dropped |
 
 ## Networking and proxy
 
@@ -167,9 +171,9 @@ Safety design:
 npm test          # same as node test/tg-control.test.mjs
 ```
 
-A fake Bot API (a real http server speaking `getUpdates` long-polling) plus fake Cordis ctx / `sessionController` / `tools` / `pluginManager` run the real plugin end to end: command-menu registration, auth, command dispatch, prompt bridging, streaming event relay, **reasoning kept off screen with typing throttling**, language switching, shell / file / direct tool calls, approval and question inline buttons, session naming and switching, power control (including the confirmation flow and `allowPower` off), config-page CSRF and saving, hot reload, and uninstall cleanup.
+A fake Bot API (a real http server speaking `getUpdates` long-polling) plus fake Cordis ctx / `sessionController` / `tools` / `pluginManager` run the real plugin end to end: command-menu registration, auth, command dispatch, prompt bridging, streaming event relay, **reasoning kept off screen with typing throttling**, language switching, shell / file / direct tool calls, approval and question inline buttons, session naming and switching, power control (including the confirmation flow and `allowPower` off), config-page CSRF and saving, Markdown rendering with the plain-text fallback, hot reload, and uninstall cleanup.
 
-Currently **all 117 assertions pass**. The suite points `powerExec` at `test/fixtures/fake-shutdown.mjs`, so **it can never really power off the machine**.
+Currently **all 132 assertions pass**. The suite points `powerExec` at `test/fixtures/fake-shutdown.mjs`, so **it can never really power off the machine**.
 
 ## Design trade-offs
 

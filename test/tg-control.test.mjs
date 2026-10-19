@@ -64,6 +64,8 @@ const api = {
   calls: [],
   messages: [],
   edits: [],
+  markdownMessages: [],
+  rejectMarkdown: false,
   nextUpdateId: 1,
   nextMessageId: 1,
   botUsername: 'dsh_test_bot',
@@ -106,14 +108,21 @@ const server = createServer((req, res) => {
       }
     }
     if (method === 'sendMessage') {
+      if (body.parse_mode && api.rejectMarkdown) {
+        res.writeHead(400, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ ok: false, error_code: 400, description: "Bad Request: can't parse entities: unexpected end of the entity" }))
+        return
+      }
       const message = {
         message_id: api.nextMessageId,
         chat_id: Number(body.chat_id),
         text: String(body.text ?? ''),
         reply_markup: body.reply_markup,
+        parse_mode: body.parse_mode,
       }
       api.nextMessageId += 1
       api.messages.push(message)
+      if (body.parse_mode) api.markdownMessages.push(message)
       return reply({ message_id: message.message_id, chat: { id: message.chat_id }, text: message.text })
     }
     if (method === 'editMessageText') {
@@ -166,6 +175,8 @@ const baseConfig = {
   answerQuestions: false,
   forwardReasoning: false,
   thinkingStatus: 'typing',
+  // 绝大多数断言直接比对字面文本，所以先跑纯文本；Markdown 渲染单独测。
+  format: 'plain',
   approvalTimeoutSeconds: 120,
   commandTimeoutSeconds: 60,
   allowShell: true,
@@ -307,7 +318,10 @@ const services = {
       const session = createSession({ cwd: request?.cwd ?? workDir })
       return { sessionId: session.sessionId }
     },
-    async prompt(request) {
+    // Host 的真实签名是 prompt(request, signal)，缺 signal 会抛
+    // "Cannot read properties of undefined (reading 'throwIfAborted')"
+    async prompt(request, signal) {
+      signal.throwIfAborted()
       const session = sessions.get(request?.sessionId)
       if (!session) throw new Error(`unknown session ${request?.sessionId}`)
       session.promoters.push(request)
@@ -826,6 +840,7 @@ try {
   ok(page.includes('name="csrf"'), '配置页带 CSRF token')
   ok(page.includes('name="lang"'), '配置页有语言选择')
   ok(page.includes('name="thinkingStatus"'), '配置页有思考状态选择')
+  ok(page.includes('name="format"'), '配置页有消息格式选择')
   const csrf = page.match(/name="csrf" value="([^"]+)"/)?.[1] ?? ''
 
   {
@@ -851,6 +866,7 @@ try {
       allowFs: '1',
       allowPower: '1',
       thinkingStatus: 'typing',
+      format: 'markdown',
       powerExec: fixture,
       powerDefaultSeconds: '60',
       configPort: String(configPort),
@@ -862,10 +878,65 @@ try {
     ok(saved?.botToken === baseConfig.botToken && saved?.lang === 'zh', '保存后配置落盘且未丢失关键项', JSON.stringify(saved))
     ok(saved?.notifyToolCalls === undefined, '工具调用推送开关已移除', JSON.stringify(saved?.notifyToolCalls))
     ok(Array.isArray(saved?.allowedUserIds) && saved.allowedUserIds.includes(USER_ID), '保存后授权列表正确', JSON.stringify(saved?.allowedUserIds))
+    ok(saved?.format === 'markdown', '保存后消息格式为 markdown', JSON.stringify(saved?.format))
   }
 
   const statusJson = await (await fetch(`${configUrl}/status`)).text()
   ok(statusJson.includes('"state"'), '配置页 /status 返回运行状态 JSON', statusJson.slice(0, 80))
+
+  // ───────────────────── Markdown 渲染 ─────────────────────
+
+  section('Markdown 渲染')
+  await waitFor(async () => (await readJson(configPath))?.format === 'markdown', '配置页把 format=markdown 落盘', 4000)
+  await sleep(2600)
+  // 热加载会重建会话流，先下发一条 prompt 把 follower 挂回去
+  const promoterCounts = new Map([...sessions.values()].map((s) => [s.sessionId, s.promoters.length]))
+  pushText('markdown 渲染测试')
+  await waitFor(
+    () => [...sessions.values()].some((s) => s.promoters.length > (promoterCounts.get(s.sessionId) ?? 0)),
+    '热加载后会话流重新挂载',
+    8000,
+  )
+  const mdSession =
+    [...sessions.values()].find((s) => s.promoters.length > (promoterCounts.get(s.sessionId) ?? 0)) ?? firstSession
+  await sleep(300)
+
+  const markdownSample = [
+    '## 结论',
+    '这是 **加粗** 和 `code` 还有 [链接](https://example.com)。',
+    '',
+    '- 第一项',
+    '- 第二项 1.2.0',
+    '',
+    '| 列A | 列B |',
+    '| --- | --- |',
+    '| 1 | 2 |',
+    '',
+    '```js',
+    'const a = `x`',
+    '```',
+  ].join('\n')
+
+  emitSession(mdSession.sessionId, 'assistant/message', { message: { content: [{ type: 'text', text: markdownSample }] } })
+  await waitFor(() => api.markdownMessages.length > 0, 'Markdown 消息带 parse_mode=MarkdownV2', 6000)
+  {
+    const sent = api.markdownMessages.at(-1)
+    ok(sent?.parse_mode === 'MarkdownV2', 'parse_mode 为 MarkdownV2', JSON.stringify(sent?.parse_mode))
+    ok(sent?.text.includes('*结论*'), '标题转成粗体', sent?.text?.slice(0, 80))
+    ok(sent?.text.includes('*加粗*'), '粗体转换正确')
+    ok(sent?.text.includes('`code`'), '行内代码保留')
+    ok(sent?.text.includes('• 第一项'), '列表转成项目符号')
+    ok(sent?.text.includes('1\\.2\\.0'), '保留字符被转义')
+    ok(/```[\s\S]*列A[\s\S]*```/.test(sent?.text ?? ''), '表格进等宽块')
+    ok(sent?.text.includes('const a = \\`x\\`'), '代码块内容转义回来')
+    ok(sent?.text.includes('[链接](https://example.com)'), '链接保留')
+  }
+
+  // 解析失败必须退回纯文本，不能丢消息
+  api.rejectMarkdown = true
+  emitSession(mdSession.sessionId, 'assistant/message', { message: { content: [{ type: 'text', text: '**兜底** 1.2.0' }] } })
+  await waitFor(() => hasText(CHAT_ID, (text) => text === '**兜底** 1.2.0'), 'MarkdownV2 解析失败自动退回纯文本', 6000)
+  api.rejectMarkdown = false
 
   // ───────────────────────── 热加载与卸载 ─────────────────────────
 

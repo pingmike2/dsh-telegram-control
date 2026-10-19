@@ -39,7 +39,8 @@ plugin_manager install_bundle  target = <本目录绝对路径>
   "answerApprovals": false,
   "answerQuestions": false,
   "forwardReasoning": false,
-  "thinkingStatus": "typing"
+  "thinkingStatus": "typing",
+  "format": "markdown"
 }
 ```
 
@@ -64,10 +65,13 @@ plugin_manager install_bundle  target = <本目录绝对路径>
 
 **工具调用同样不上屏**：`tool/call`（`🔧 edit`、`🔧 pwsh` 那种）只用来刷新「正在输入…」状态，一条消息都不发；`tool/result` 只在**失败**时发一行 `⚠️ 工具失败：…`。所以手机上看到的永远是：状态在动 → 最终回答。
 
+消息按 Markdown 渲染：回答里的标题会变粗体、表格和代码块进等宽块、`*` `_` `.` 这类保留字符自动转义，不再原样显示源码。哪条消息 Telegram 解析不了，就自动退回纯文本重发一次。
+
 | 开关 | 默认 | 说明 |
 |---|---|---|
 | `forwardReasoning` | `false` | `/reasoning on` 后把思考内容也发出来（带 `🧠 思考` 前缀），排查问题时用 |
 | `thinkingStatus` | `typing` | `typing`（只发状态）/ `message` / `off`（完全不发） |
+| `format` | `markdown` | 消息发送格式：`markdown` 渲染标题/表格/代码块并自动转义保留字符；`plain` 原样输出。解析失败自动退回纯文本，不丢消息 |
 
 ## 网络与代理
 
@@ -167,9 +171,9 @@ Node 的 `fetch`（undici）**不读 Windows 系统代理**，所以在需要代
 npm test          # 等价于 node test/tg-control.test.mjs
 ```
 
-本地起一个假的 Bot API（真 http server，走 `getUpdates` 长轮询）+ 假的 Cordis ctx / `sessionController` / `tools` / `pluginManager`，真跑插件：命令菜单注册、鉴权、命令分发、prompt 桥接、流式事件回流、**思考过程不上屏与 typing 节流**、语言切换、shell / 文件 / 工具直调、审批与提问内联按钮、会话命名与切换、电源控制（含二次确认与 `allowPower` 关闭）、配置页 CSRF 与保存、热加载、卸载清理。
+本地起一个假的 Bot API（真 http server，走 `getUpdates` 长轮询）+ 假的 Cordis ctx / `sessionController` / `tools` / `pluginManager`，真跑插件：命令菜单注册、鉴权、命令分发、prompt 桥接、流式事件回流、**思考过程不上屏与 typing 节流**、语言切换、shell / 文件 / 工具直调、审批与提问内联按钮、会话命名与切换、电源控制（含二次确认与 `allowPower` 关闭）、配置页 CSRF 与保存、Markdown 渲染与纯文本兜底、热加载、卸载清理。
 
-当前：**117 项断言全部通过**。测试用 `powerExec` 指向 `test/fixtures/fake-shutdown.mjs`，**绝不会真的关机**。
+当前：**132 项断言全部通过**。测试用 `powerExec` 指向 `test/fixtures/fake-shutdown.mjs`，**绝不会真的关机**。
 
 ## 设计取舍
 
