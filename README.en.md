@@ -53,20 +53,6 @@ On startup the plugin calls `setMyCommands` and registers **41 commands** across
 - It also sets the bot's short description and description (`setMyShortDescription` / `setMyDescription`) so the profile page explains what it does.
 - `botCommands` in the status file is the registered count; `GET /status` exposes the same value.
 
-## Internationalization (i18n)
-
-All user-facing text lives in `locale/*.json`: **flat key → template**, `{placeholder}` interpolation, missing keys fall back to `zh`.
-
-| File | Language |
-|---|---|
-| `locale/zh.json` | Simplified Chinese (default) |
-| `locale/en.json` | English |
-
-- `/lang` shows the current language and the available list; `/lang en` / `/lang zh` switches: the command menu is **re-registered immediately**, every reply is re-rendered, and `lang` is persisted (survives hot reload).
-- The config page dropdown reads `$meta.label` from `locale/*.json`, so dropping in `locale/xx.json` adds a language without touching code.
-- Translation covers human-facing text only: command names and English technical details inside logs stay as they are.
-- Docs are bilingual too: this file and [README.md](README.md) (Chinese, the default).
-
 ## Thinking and status feedback
 
 While the model reasons it emits a flood of `reasoning` deltas. Those **never reach the chat** (the Web UI uses them; Telegram does not need them). The plugin does exactly two things:
@@ -179,7 +165,7 @@ Safety design:
 npm test          # same as node test/tg-control.test.mjs
 ```
 
-A fake Bot API (a real http server speaking `getUpdates` long-polling) plus fake Cordis ctx / `sessionController` / `tools` / `pluginManager` run the real plugin end to end: command-menu registration, auth, command dispatch, prompt bridging, streaming event relay, **reasoning kept off screen with typing throttling**, i18n switching, shell / file / direct tool calls, approval and question inline buttons, session naming and switching, power control (including the confirmation flow and `allowPower` off), config-page CSRF and saving, hot reload, and uninstall cleanup.
+A fake Bot API (a real http server speaking `getUpdates` long-polling) plus fake Cordis ctx / `sessionController` / `tools` / `pluginManager` run the real plugin end to end: command-menu registration, auth, command dispatch, prompt bridging, streaming event relay, **reasoning kept off screen with typing throttling**, language switching, shell / file / direct tool calls, approval and question inline buttons, session naming and switching, power control (including the confirmation flow and `allowPower` off), config-page CSRF and saving, hot reload, and uninstall cleanup.
 
 Currently **all 117 assertions pass**. The suite points `powerExec` at `test/fixtures/fake-shutdown.mjs`, so **it can never really power off the machine**.
 

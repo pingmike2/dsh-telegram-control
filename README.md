@@ -53,20 +53,6 @@ plugin_manager install_bundle  target = <本目录绝对路径>
 - 同时会设置 Bot 的简介与描述（`setMyShortDescription` / `setMyDescription`），在 Telegram 的 Bot 资料页直接能看懂它能干什么。
 - 状态文件里的 `botCommands` 字段就是已注册条数；`GET /status` 同样能看到。
 
-## 多语言（i18n）
-
-界面文案走 `locale/*.json`：**扁平 key → 模板**，支持 `{placeholder}` 插值，缺 key 回退 `zh`。
-
-| 文件 | 语言 |
-|---|---|
-| `locale/zh.json` | 简体中文（默认） |
-| `locale/en.json` | English |
-
-- `/lang` 查看当前语言与可选列表，`/lang en` / `/lang zh` 切换：**立刻重注册命令菜单**、重渲染所有回复，并把 `lang` 落盘（热加载后保持）。
-- 配置页的下拉框直接读 `locale/*.json` 的 `$meta.label`，新增一个 `locale/xx.json` 就能多一门语言，不用改代码。
-- 翻译只覆盖"给人看的文案"：命令名、日志里的英文技术细节保持原样。
-- 文档本身也是双语的：本文件（中文，默认）与 [README.en.md](README.en.md)。
-
 ## 思考过程与状态提示
 
 模型在思考时会产生大量 `reasoning` 增量。这些**一律不上屏**（Web UI 用它们，Telegram 不需要），插件只做两件事：
@@ -179,7 +165,7 @@ Node 的 `fetch`（undici）**不读 Windows 系统代理**，所以在需要代
 npm test          # 等价于 node test/tg-control.test.mjs
 ```
 
-本地起一个假的 Bot API（真 http server，走 `getUpdates` 长轮询）+ 假的 Cordis ctx / `sessionController` / `tools` / `pluginManager`，真跑插件：命令菜单注册、鉴权、命令分发、prompt 桥接、流式事件回流、**思考过程不上屏与 typing 节流**、i18n 切换、shell / 文件 / 工具直调、审批与提问内联按钮、会话命名与切换、电源控制（含二次确认与 `allowPower` 关闭）、配置页 CSRF 与保存、热加载、卸载清理。
+本地起一个假的 Bot API（真 http server，走 `getUpdates` 长轮询）+ 假的 Cordis ctx / `sessionController` / `tools` / `pluginManager`，真跑插件：命令菜单注册、鉴权、命令分发、prompt 桥接、流式事件回流、**思考过程不上屏与 typing 节流**、语言切换、shell / 文件 / 工具直调、审批与提问内联按钮、会话命名与切换、电源控制（含二次确认与 `allowPower` 关闭）、配置页 CSRF 与保存、热加载、卸载清理。
 
 当前：**117 项断言全部通过**。测试用 `powerExec` 指向 `test/fixtures/fake-shutdown.mjs`，**绝不会真的关机**。
 
