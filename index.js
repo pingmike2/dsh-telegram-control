@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url'
 /** Cordis 插件名（出现在 Loader 诊断里）。 */
 export const name = 'telegram-control'
 /** 插件版本。 */
-export const version = '1.1.0'
+export const version = '1.2.0'
 
 /** 所有能力都在调用时按需通过 `ctx.get()` 解析，因此不声明硬依赖。 */
 export const inject = []
@@ -46,7 +46,6 @@ const DEFAULTS = {
   agentPreset: '',
   pollTimeoutSeconds: 25,
   maxMessageChars: 3600,
-  notifyToolCalls: false,
   answerApprovals: false,
   answerQuestions: false,
   forwardReasoning: false,
@@ -268,7 +267,6 @@ function normalizeConfig(staticConfig, fileConfig) {
     agentPreset: typeof merged.agentPreset === 'string' ? merged.agentPreset.trim() : '',
     pollTimeoutSeconds: clampInt(merged.pollTimeoutSeconds, 1, 50, DEFAULTS.pollTimeoutSeconds),
     maxMessageChars: clampInt(merged.maxMessageChars, 200, 4096, DEFAULTS.maxMessageChars),
-    notifyToolCalls: merged.notifyToolCalls === true,
     answerApprovals: merged.answerApprovals === true,
     answerQuestions: merged.answerQuestions === true,
     forwardReasoning: merged.forwardReasoning === true,
@@ -645,7 +643,6 @@ ${message ? `<p class="msg">${escapeHtml(message)}</p>` : ''}
   </fieldset>
   <fieldset><legend>开关</legend>
     <label class="check"><input type="checkbox" name="enabled"${checked(values.enabled)}> 启用插件</label>
-    <label class="check"><input type="checkbox" name="notifyToolCalls"${checked(values.notifyToolCalls)}> 推送工具调用（只发工具名，默认关闭）</label>
     <label class="check"><input type="checkbox" name="answerApprovals"${checked(values.answerApprovals)}> 接管工具执行审批</label>
     <label class="check"><input type="checkbox" name="answerQuestions"${checked(values.answerQuestions)}> 接管 ask_user_question</label>
     <label class="check"><input type="checkbox" name="forwardReasoning"${checked(values.forwardReasoning)}> 把模型思考过程也发到 Telegram（默认关闭）</label>
@@ -734,7 +731,6 @@ function startConfigServer(options) {
             allowedChatIds: toIdList(form.get('allowedChatIds')),
             workingDirectory: String(form.get('workingDirectory') ?? '').trim(),
             agentPreset: String(form.get('agentPreset') ?? '').trim(),
-            notifyToolCalls: form.has('notifyToolCalls'),
             answerApprovals: form.has('answerApprovals'),
             answerQuestions: form.has('answerQuestions'),
             forwardReasoning: form.has('forwardReasoning'),
@@ -1322,12 +1318,12 @@ const THINKING_PULSE_MS = 4000
  * 让 Telegram 显示「对方正在输入…」状态。
  * 思考过程本身不上屏，只用一个状态提示"机器人在想"。
  */
-async function pulseThinking(rt, chatId) {
+async function pulseThinking(rt, chatId, force = false) {
   const mode = rt.cfg.thinkingStatus
   if (mode === 'off') return
   const now = Date.now()
   const last = rt.thinkingAt.get(chatId) ?? 0
-  if (now - last < THINKING_PULSE_MS) return
+  if (!force && now - last < THINKING_PULSE_MS) return
   rt.thinkingAt.set(chatId, now)
   await sendTyping(rt, chatId)
 }
@@ -1363,15 +1359,13 @@ async function onSessionEvent(rt, chat, event) {
       return
     }
     case 'tool/call': {
-      if (!rt.cfg.notifyToolCalls) return
-      // 只报工具名：参数是整段 JSON，对手机阅读没有意义
-      const toolName = String(event.data?.name ?? '')
-      if (toolName.length === 0) return
-      await sendText(rt, chat.id, `🔧 ${clip(toolName, 64)}`)
+      // 工具调用不上屏，只刷新「正在输入…」状态：
+      // 手机上连发 🔧 工具名 属于纯噪音，进度感交给状态即可。
+      await pulseThinking(rt, chat.id, true)
       return
     }
     case 'tool/result': {
-      if (!rt.cfg.notifyToolCalls) return
+      // 只有失败才值得占用一条消息；成功静默回流到最终回答里。
       const error = event.data?.error
       if (error && typeof error === 'object') {
         const line = [error.name ?? 'error', error.reason ?? ''].filter(Boolean).join(' ')
@@ -2931,7 +2925,8 @@ async function ensureTemplateConfig(configPath, staticConfig) {
       allowedChatIds: [],
       workingDirectory: '',
       agentPreset: '',
-      notifyToolCalls: false,
+      lang: 'zh',
+      thinkingStatus: 'typing',
       answerApprovals: false,
       answerQuestions: false,
     })

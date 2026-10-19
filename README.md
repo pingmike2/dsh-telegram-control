@@ -32,7 +32,6 @@ plugin_manager install_bundle  target = <本目录绝对路径>
   "proxyUrl": "auto",
   "configPort": 59777,
   "lang": "zh",
-  "notifyToolCalls": false,
   "answerApprovals": false,
   "answerQuestions": false,
   "forwardReasoning": false,
@@ -72,11 +71,12 @@ plugin_manager install_bundle  target = <本目录绝对路径>
 1. 给聊天发一个 `sendChatAction: typing` —— 手机上就是「对方正在输入…」，节流 4 秒一次，不会刷屏。
 2. 最终 `assistant/message` 的 `text` 块才是回答，正常发出来。
 
+**工具调用同样不上屏**：`tool/call`（`🔧 edit`、`🔧 pwsh` 那种）只用来刷新「正在输入…」状态，一条消息都不发；`tool/result` 只在**失败**时发一行 `⚠️ 工具失败：…`。所以手机上看到的永远是：状态在动 → 最终回答。
+
 | 开关 | 默认 | 说明 |
 |---|---|---|
 | `forwardReasoning` | `false` | `/reasoning on` 后把思考内容也发出来（带 `🧠 思考` 前缀），排查问题时用 |
 | `thinkingStatus` | `typing` | `typing`（只发状态）/ `message` / `off`（完全不发） |
-| `notifyToolCalls` | `false` | 开启后工具调用**只报工具名**（`🔧 shell`），不发参数 JSON |
 
 ## 网络与代理
 
@@ -98,7 +98,7 @@ Node 的 `fetch`（undici）**不读 Windows 系统代理**，所以在需要代
 
 ```json
 {
-  "version": "1.1.0",
+  "version": "1.2.0",
   "state": "running",
   "pid": 3900,
   "startedAt": 1792418496591,
@@ -120,7 +120,7 @@ Node 的 `fetch`（undici）**不读 Windows 系统代理**，所以在需要代
 | 分类 | 命令 |
 |---|---|
 | 会话 | `/sessions`（按钮直接切换） `/new [目录] [\| 标题]` `/use <序号\|id\|标题>` `/info` `/cancel` `/fork` `/rename <标题>` |
-| 对话 | 直接发文本（下发 prompt，最终回答/工具名/回合状态回流）、`/models` `/model <provider> <model>` `/presets` |
+| 对话 | 直接发文本（下发 prompt，最终回答/回合状态回流）、`/models` `/model <provider> <model>` `/presets` |
 | 直接控制 | `/shell <命令>` `/cd` `/pwd` `/ls [路径]` `/read <路径>` `/write <路径>⏎内容` `/tools` `/tool <名称> [JSON]` |
 | 审批/提问 | `/approvals on\|off`（接管工具执行审批，内联按钮）、`/questions on\|off`（接管 `ask_user_question`）、`/reasoning on\|off` |
 | 插件 | `/plugins` `/plugin enable\|disable <patchId>` `/bundles` `/install <包>` `/uninstall <名称>` |
@@ -178,7 +178,7 @@ npm test          # 等价于 node test/tg-control.test.mjs
 
 本地起一个假的 Bot API（真 http server，走 `getUpdates` 长轮询）+ 假的 Cordis ctx / `sessionController` / `tools` / `pluginManager`，真跑插件：命令菜单注册、鉴权、命令分发、prompt 桥接、流式事件回流、**思考过程不上屏与 typing 节流**、i18n 切换、shell / 文件 / 工具直调、审批与提问内联按钮、会话命名与切换、电源控制（含二次确认与 `allowPower` 关闭）、配置页 CSRF 与保存、热加载、卸载清理。
 
-当前：**114 项断言全部通过**。测试用 `powerExec` 指向 `test/fixtures/fake-shutdown.mjs`，**绝不会真的关机**。
+当前：**117 项断言全部通过**。测试用 `powerExec` 指向 `test/fixtures/fake-shutdown.mjs`，**绝不会真的关机**。
 
 ## 设计取舍
 

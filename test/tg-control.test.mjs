@@ -162,7 +162,6 @@ const baseConfig = {
   agentPreset: '',
   pollTimeoutSeconds: 1,
   maxMessageChars: 3600,
-  notifyToolCalls: true,
   answerApprovals: false,
   answerQuestions: false,
   forwardReasoning: false,
@@ -489,7 +488,8 @@ try {
   await waitFor(() => hasText(CHAT_ID, (text) => text.includes('DSH Telegram 控制台')), '/help 输出帮助')
   ok(hasText(CHAT_ID, (text) => text.includes('/shutdown') && text.includes('/lang')), '/help 含主机控制与语言命令')
   pushText('/version')
-  await waitFor(() => hasText(CHAT_ID, (text) => text.includes('1.1.0')), '/version 输出版本号')
+  const pkgVersion = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version
+  await waitFor(() => hasText(CHAT_ID, (text) => text.includes(pkgVersion)), `/version 输出版本号 ${pkgVersion}`)
   pushText('/sessions')
   await waitFor(() => hasText(CHAT_ID, (text) => text.includes('暂无会话')), '/sessions 空列表提示')
   pushText('/menu')
@@ -533,8 +533,17 @@ try {
   ok(!hasText(CHAT_ID, (text) => text.includes('流式片段不该出现')), '逐 token 流式片段不上屏')
 
   emitSession(firstSession.sessionId, 'tool/call', { name: 'shell', arguments: { command: 'echo hi' } })
-  await waitFor(() => hasText(CHAT_ID, (text) => text === '\u{1F527} shell'), '工具调用通知只发工具名')
-  ok(!hasText(CHAT_ID, (text) => text.includes('"command"')), '工具通知不带参数 JSON')
+  {
+    const before = typingCount()
+    emitSession(firstSession.sessionId, 'tool/call', { name: 'edit', arguments: { path: 'a.txt' } })
+    await waitFor(() => typingCount() > before, '工具调用刷新「正在输入…」状态')
+    await sleep(300)
+    ok(!hasText(CHAT_ID, (text) => text.startsWith('🔧')), '工具调用不再单独发消息', JSON.stringify(textsOf().slice(-3)))
+    ok(!hasText(CHAT_ID, (text) => text.includes('a.txt')), '工具调用参数不上屏')
+  }
+
+  emitSession(firstSession.sessionId, 'tool/result', { name: 'shell', error: { name: 'TimeoutError', reason: 'took too long' } })
+  await waitFor(() => hasText(CHAT_ID, (text) => text.includes('工具失败') && text.includes('took too long')), '工具失败仍然提示')
 
   emitSession(firstSession.sessionId, 'turn/end', { reason: { kind: 'completed' } })
   await waitFor(() => hasText(CHAT_ID, (text) => text === '✅ 本轮完成'), '回合结束提示')
@@ -837,7 +846,6 @@ try {
       allowedChatIds: String(CHAT_ID),
       workingDirectory: workDir,
       agentPreset: '',
-      notifyToolCalls: '1',
       allowShell: '1',
       allowTools: '1',
       allowFs: '1',
@@ -851,7 +859,8 @@ try {
     const response = await fetch(`${configUrl}/save`, { method: 'POST', body: form, redirect: 'manual' })
     ok(response.status === 302, '配置页保存成功', `status=${response.status}`)
     const saved = await readJson(configPath)
-    ok(saved?.botToken === baseConfig.botToken && saved?.notifyToolCalls === true, '保存后配置落盘且未丢失关键项', JSON.stringify(saved))
+    ok(saved?.botToken === baseConfig.botToken && saved?.lang === 'zh', '保存后配置落盘且未丢失关键项', JSON.stringify(saved))
+    ok(saved?.notifyToolCalls === undefined, '工具调用推送开关已移除', JSON.stringify(saved?.notifyToolCalls))
     ok(Array.isArray(saved?.allowedUserIds) && saved.allowedUserIds.includes(USER_ID), '保存后授权列表正确', JSON.stringify(saved?.allowedUserIds))
   }
 
