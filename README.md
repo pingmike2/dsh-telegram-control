@@ -1,5 +1,7 @@
 # dsh-telegram-control
 
+**[简体中文](README.md)** | [English](README.en.md)
+
 DSH 的**系统级** Telegram 控制台：装上之后，整个 DeepSeek Harness（所有会话、所有 preset）都能从一个 Telegram Bot 远程操控。
 
 - 纯 Host 插件，零第三方依赖（只用 Node 内建模块），安装即生效，不需要 `pnpm` 拉包。
@@ -63,6 +65,7 @@ plugin_manager install_bundle  target = <本目录绝对路径>
 - `/lang` 查看当前语言与可选列表，`/lang en` / `/lang zh` 切换：**立刻重注册命令菜单**、重渲染所有回复，并把 `lang` 落盘（热加载后保持）。
 - 配置页的下拉框直接读 `locale/*.json` 的 `$meta.label`，新增一个 `locale/xx.json` 就能多一门语言，不用改代码。
 - 翻译只覆盖"给人看的文案"：命令名、日志里的英文技术细节保持原样。
+- 文档本身也是双语的：本文件（中文，默认）与 [README.en.md](README.en.md)。
 
 ## 思考过程与状态提示
 
