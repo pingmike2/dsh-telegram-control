@@ -1,0 +1,18 @@
+# Telegram 控制台 bundle
+#
+# 把 DeepSeek Harness 变成一个可以用 Telegram 远程操控的后端：
+# 会话管理、prompt 下发、shell 执行、工具直调、审批接管、插件管理。
+#
+# botToken 留空时，插件会从 %DSH_HOME%\telegram-control.json 读取配置，
+# 该文件被热加载（默认 5 秒轮询），无需重启 Harness 即可上线。
+- insert:
+    - id: telegram-control
+      name: dsh-telegram-control
+      config:
+        enabled: true
+        botToken: ''
+        allowedUserIds: []
+        allowedChatIds: []
+        notifyToolCalls: true
+        answerApprovals: false
+        answerQuestions: false

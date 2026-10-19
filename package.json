@@ -1,0 +1,35 @@
+{
+  "name": "dsh-telegram-control",
+  "version": "1.1.0",
+  "description": "Telegram bot console for DeepSeek Harness: sessions, prompts, shell, tools, approvals, plugins, power control and i18n.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node test/tg-control.test.mjs"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "telegram",
+    "bot",
+    "cordis-plugin"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
