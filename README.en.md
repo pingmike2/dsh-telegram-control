@@ -65,13 +65,13 @@ While the model reasons it emits a flood of `reasoning` deltas. Those **never re
 
 **Tool calls stay off screen as well**: `tool/call` (the `🔧 edit` / `🔧 pwsh` kind) only refreshes the typing indicator and sends no message at all; `tool/result` only reports **failures** as a single `⚠️ Tool failed: …` line. On your phone you therefore always see: status moving → final answer.
 
-Replies are rendered as Markdown: headings become bold, tables and fenced code land in monospace blocks, and reserved characters such as `*` `_` `.` are escaped instead of leaking into the chat as raw source. If Telegram ever rejects a message, it is resent as plain text.
+Replies are rendered as Markdown: headings become bold, fenced code lands in monospace blocks, and reserved characters such as `*` `_` `.` are escaped instead of leaking into the chat as raw source. Tables have no MarkdownV2 syntax and monospace blocks wrap badly on a phone, so they are **turned into key/value lines**: two columns become `• label: value`, wider tables become `• header: value · header: value`. If Telegram ever rejects a message, it is resent as plain text.
 
 | Toggle | Default | Meaning |
 |---|---|---|
 | `forwardReasoning` | `false` | After `/reasoning on`, reasoning is also forwarded (prefixed with `🧠 Thinking`) — useful when debugging |
 | `thinkingStatus` | `typing` | `typing` (status only) / `message` / `off` (nothing at all) |
-| `format` | `markdown` | Outbound format: `markdown` renders headings / tables / code blocks and escapes reserved characters; `plain` sends the source verbatim. Unparseable messages are resent as plain text, never dropped |
+| `format` | `markdown` | Outbound format: `markdown` renders headings / tables / code blocks and escapes reserved characters (tables become key/value lines); `plain` sends the source verbatim. Unparseable messages are resent as plain text, never dropped |
 
 ## Networking and proxy
 

@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url'
 /** Cordis 插件名（出现在 Loader 诊断里）。 */
 export const name = 'telegram-control'
 /** 插件版本。 */
-export const version = '1.3.0'
+export const version = '1.3.1'
 
 /** 所有能力都在调用时按需通过 `ctx.get()` 解析，因此不声明硬依赖。 */
 export const inject = []
@@ -298,19 +298,56 @@ function inlineMdV2(text) {
   return out
 }
 
+/** 表格一行 → 单元格。 */
+function tableCells(line) {
+  return line
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+    .map((cell) => cell.trim())
+}
+
+function isTableSeparator(cells) {
+  return cells.length > 0 && cells.every((cell) => /^:?-{2,}:?$/.test(cell))
+}
+
 /**
- * 整段 Markdown → MarkdownV2：标题加粗、列表换项目符号、表格和代码块进等宽块。
+ * 表格没有 MarkdownV2 语法，等宽块在手机上还会换行错位，所以翻成键值行：
+ * 两列 → `• *标签*：值`；多列 → `• 表头：值 · 表头：值`。
+ */
+function renderTable(rows) {
+  const parsed = rows.map(tableCells).filter((cells) => !isTableSeparator(cells))
+  if (parsed.length === 0) return []
+  const [header, ...body] = parsed
+  if (body.length === 0) return parsed.map((cells) => `• ${inlineMdV2(cells.join(' · '))}`)
+  if (header.length <= 2) {
+    return body.map((cells) => `• *${inlineMdV2(cells[0] ?? '')}*：${inlineMdV2(cells[1] ?? '')}`)
+  }
+  return body.map((cells) => {
+    const parts = cells
+      .map((cell, index) => {
+        const key = header[index] && header[index] !== cell ? `${inlineMdV2(header[index])}：` : ''
+        return `${key}${inlineMdV2(cell)}`
+      })
+      .filter(Boolean)
+    return `• ${parts.join(' · ')}`
+  })
+}
+
+/**
+ * 整段 Markdown → MarkdownV2：标题加粗、列表换项目符号、表格翻成键值行、代码块进等宽块。
  * 内容按行处理，任何解析不了的东西都会退化成转义后的纯文本，不会丢字。
  */
 function markdownToMdV2(text) {
   const lines = String(text ?? '').replace(/\r\n/g, '\n').split('\n')
   const out = []
   let inFence = false
-  let inTable = false
+  let tableRows = []
   const closeTable = () => {
-    if (inTable) {
-      out.push('```')
-      inTable = false
+    if (tableRows.length > 0) {
+      out.push(...renderTable(tableRows))
+      tableRows = []
     }
   }
   for (const line of lines) {
@@ -327,11 +364,7 @@ function markdownToMdV2(text) {
       continue
     }
     if (/^\s*\|.*\|\s*$/.test(line)) {
-      if (!inTable) {
-        out.push('```')
-        inTable = true
-      }
-      out.push(line.replace(/[\\`]/g, (c) => `\\${c}`))
+      tableRows.push(line)
       continue
     }
     closeTable()
@@ -365,7 +398,7 @@ function markdownToMdV2(text) {
     }
     out.push(inlineMdV2(line))
   }
-  if (inTable) out.push('```')
+  closeTable()
   if (inFence) out.push('```')
   return out.join('\n')
 }

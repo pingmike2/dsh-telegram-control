@@ -912,6 +912,10 @@ try {
     '| --- | --- |',
     '| 1 | 2 |',
     '',
+    '| 字段 | 值 | 含义 |',
+    '| --- | --- | --- |',
+    '| state | running | 插件在跑 |',
+    '',
     '```js',
     'const a = `x`',
     '```',
@@ -927,7 +931,10 @@ try {
     ok(sent?.text.includes('`code`'), '行内代码保留')
     ok(sent?.text.includes('• 第一项'), '列表转成项目符号')
     ok(sent?.text.includes('1\\.2\\.0'), '保留字符被转义')
-    ok(/```[\s\S]*列A[\s\S]*```/.test(sent?.text ?? ''), '表格进等宽块')
+    ok(sent?.text.includes('• *1*：2'), '两列表格翻成键值行', sent?.text?.slice(0, 200))
+    ok(sent?.text.includes('• 字段：state · 值：running · 含义：插件在跑'), '多列表格退化成一行键值对', sent?.text?.slice(0, 200))
+    ok(!(sent?.text ?? '').includes('|'), '表格不再留下裸管道符')
+    ok(!/```[\s\S]*列A/.test(sent?.text ?? ''), '表格不再塞进等宽块')
     ok(sent?.text.includes('const a = \\`x\\`'), '代码块内容转义回来')
     ok(sent?.text.includes('[链接](https://example.com)'), '链接保留')
   }
