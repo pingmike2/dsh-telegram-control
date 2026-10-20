@@ -30,6 +30,12 @@ node test/tg-control.test.mjs   # 或 npm test
 - 描述里说明：为什么改、怎么验证（贴测试输出最好）。
 - 改了行为就同步 README（中英两份），改了版本号记得同步 `package.json` 与 `index.js` 的 `version`。
 
+## 发版（maintainer 自己用）
+
+- tag 前 `npm test` 必须绿——`.github/workflows/release.yml` 里也挂了这道闸，红了不出包。
+- `git tag v<版本> && git push origin v<版本>` → 工作流自动跑测试、打 zip（内容 = `package.json` 的 `files` 白名单）并挂到 GitHub Release。
+- Release 产物是 `.zip`（Windows 用户右键可解）；zip 旁附 `.sha256` 校验文件。
+
 ## 报 bug
 
 带上这些信息基本能一次定位：

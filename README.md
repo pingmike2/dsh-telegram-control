@@ -33,8 +33,21 @@ telegram-control（Host 插件，process 级单例）
 
 ## 安装
 
+两种姿势，选一种：
+
+**A. git 拉仓库**（更新方便，`git pull` 即可升级）：
+
 ```text
-plugin_manager install_bundle  target = <本目录绝对路径>
+git clone https://github.com/pingmike2/dsh-telegram-control.git
+plugin_manager install_bundle  target = <clone 出来的目录绝对路径>
+```
+
+**B. 下载发布包**（没 git / 不想 clone；Windows 用户右键可直接解压 zip）：
+
+```text
+1. 到 https://github.com/pingmike2/dsh-telegram-control/releases/latest 下载 dsh-telegram-control-<版本>.zip
+2. 解压到任意目录
+3. plugin_manager install_bundle  target = <解压目录绝对路径>
 ```
 
 安装后自动在 profile 的 `cordis.patch.yml` 前插入 `telegram-control` 行。
@@ -156,7 +169,7 @@ Node 的 `fetch`（undici）**不读 Windows 系统代理**，所以在需要代
 
 ```json
 {
-  "version": "1.3.3",
+  "version": "1.4.0",
   "state": "running",
   "pid": 3900,
   "startedAt": 1792418496591,
@@ -275,7 +288,8 @@ npm test          # 等价于 node test/tg-control.test.mjs
 
 ## 注意事项
 
-- **部署形态**：这是 Windows 优先的插件（系统代理探测、`shutdown.exe` 电源控制、PowerShell/cmd shell 均按 `process.platform` 区分）；Linux/macOS 走 `systemctl` / `pmset` / `loginctl` 兜底，代理自动探测在非 Windows 上不生效，需要显式给 `proxyUrl`。
+- **部署形态**：三平台兼容——电源命令按 `process.platform` 自动翻译：Windows `shutdown /s|/r /t <秒>`（`/a` 取消）、Linux/macOS `shutdown -h|-r now|+分钟`（Linux 可 `-c` 取消；**macOS 的 shutdown 没有取消命令**，定时任务发起后无法撤销）。锁屏三平台各自走 `rundll32` / `pmset displaysleepnow` / `loginctl lock-session`；睡眠 mac 用 `pmset sleepnow`、Linux 用 `systemctl suspend`。`/shell` Windows 依次试 `pwsh`→`powershell`→`cmd`，其余平台 `/bin/bash -lc`（想用 zsh 就给 `shellPath` 填 `/bin/zsh`）。
+- **代理自动探测**：`proxyUrl: auto` 时 Windows 读注册表 WinINET，macOS 读 `scutil --proxy`，Linux 读 `http_proxy` 等 env 变量（其次 GNOME gsettings）；环境里都没有就直连——国内网络直连 `api.telegram.org` 大概率超时，此时显式给 `proxyUrl`。
 - **密钥位置**：`botToken` 只存在 `%DSH_HOME%\telegram-control.json`（本地文件）与 DSH profile 配置里，不回显到日志与状态文件（状态里只保留 `id:***末4位`）。排查技巧：自查用 `grep -o '"botToken[^,]*'` 只取值，别整段贴出去。
 - **配置页只监听本机**：`configPort` 绑定 `127.0.0.1`，局域网内其他设备访问不到；`/save` 有进程级 CSRF token 保护。端口改成 `0` 可彻底关掉配置页，用文件方式管理配置。
 - **`/shell` `/write` `/tool` 等于把主机交出去**：白名单只认 Telegram 账号 id，账号被盗即主机裸奔。不确定时先把 `allowShell` / `allowPower` 关掉，按需再开。

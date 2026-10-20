@@ -33,8 +33,21 @@ State on disk: %DSH_HOME%\telegram-control-state.json (chat↔session bindings)
 
 ## Install
 
+Two ways, pick one:
+
+**A. Clone the repo** (easier updates: just `git pull`):
+
 ```text
-plugin_manager install_bundle  target = <absolute path to this directory>
+git clone https://github.com/pingmike2/dsh-telegram-control.git
+plugin_manager install_bundle  target = <absolute path to the cloned directory>
+```
+
+**B. Download the release package** (no git required; the zip opens with a double-click on Windows):
+
+```text
+1. Grab dsh-telegram-control-<version>.zip from https://github.com/pingmike2/dsh-telegram-control/releases/latest
+2. Unzip it anywhere
+3. plugin_manager install_bundle  target = <absolute path to the unzipped directory>
 ```
 
 Installation inserts a `telegram-control` row at the front of the profile's `cordis.patch.yml`.
@@ -156,7 +169,7 @@ Every supervision tick rewrites `%DSH_HOME%\telegram-control-status.json`:
 
 ```json
 {
-  "version": "1.3.3",
+  "version": "1.4.0",
   "state": "running",
   "pid": 3900,
   "startedAt": 1792418496591,
@@ -276,7 +289,8 @@ Currently **all 141 assertions pass**. The suite points `powerExec` at `test/fix
 
 ## Notes
 
-- **Deployment shape**: Windows-first plugin (system-proxy detection, `shutdown.exe` power control, PowerShell/cmd shells are all picked by `process.platform`); Linux/macOS fall back to `systemctl` / `pmset` / `loginctl`, and automatic proxy detection does nothing there — set `proxyUrl` explicitly.
+- **Deployment shape**: cross-platform — power commands are translated per `process.platform`: Windows `shutdown /s|/r /t <seconds>` (cancel `/a`), Linux/macOS `shutdown -h|-r now|+minutes` (Linux can cancel with `-c`; **macOS shutdown has no cancel command**, a scheduled action cannot be revoked). Lock walks `rundll32` / `pmset displaysleepnow` / `loginctl lock-session`; sleep uses `pmset sleepnow` on macOS and `systemctl suspend` on Linux. `/shell` tries `pwsh`→`powershell`→`cmd` on Windows, `/bin/bash -lc` elsewhere (set `shellPath` to `/bin/zsh` if you prefer zsh).
+- **Automatic proxy detection**: with `proxyUrl: auto`, Windows reads the WinINET registry, macOS reads `scutil --proxy`, Linux reads the `http_proxy` / `https_proxy` / `all_proxy` env vars (then GNOME gsettings). If none are present it goes direct — from networks where `api.telegram.org` is unreachable directly, set `proxyUrl` explicitly.
 - **Secret location**: `botToken` lives only in `%DSH_HOME%\telegram-control.json` (a local file) and the DSH profile config; it is never echoed into logs or the status file (which keeps only the `id:***last4` form). For a local check use something like `grep -o '"botToken[^,]*'` to grab just the value — don’t paste the whole line around.
 - **Config page is local-only**: `configPort` binds to `127.0.0.1`, unreachable from other machines on the LAN; `POST /save` is guarded by a process-level CSRF token. Setting the port to `0` shuts the page down completely and you manage config by file.
 - **`/shell`, `/write`, `/tool` hand over the host**: the allowlist only knows Telegram account ids — a stolen account means a bare host. If unsure, switch `allowShell` / `allowPower` off first and re-enable on demand.

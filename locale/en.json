@@ -86,6 +86,7 @@
   "power.dash": "—",
   "power.scheduled": "⏻ {action} scheduled in {seconds}s.\nChanged your mind? Send /cancel (or /shutdown cancel) to abort.",
   "power.aborted": "✅ Scheduled shutdown/restart aborted",
+  "power.cancelUnsupported": "⚠️ macOS shutdown has no cancel command — the scheduled {action} will run as planned.",
   "power.scheduledLog": "{action} scheduled in {seconds}s",
   "power.abortedLog": "scheduled power action aborted",
   "power.usage": "Usage: /shutdown [seconds|now]\ne.g. /shutdown (60s default) / /shutdown 300 / /shutdown now",

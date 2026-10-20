@@ -1,0 +1,43 @@
+name: release
+
+# 发版流程：push 一个 v* tag → 自动跑测试 → 绿了打 zip 挂 GitHub Release。
+# Release 附件用 .zip（Windows 用户右键直接解），文件名里带版本号。
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write # 挂 Release 需要
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # 闸门：测试红就不出包、不发版
+      - name: Run tests
+        run: node test/tg-control.test.mjs
+
+      - name: Package zip
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p "dsh-telegram-control-${VERSION}"
+          # 与 package.json files 白名单一致：index.js / cordis.patch.yml / locale / icon.svg / 双 README
+          cp index.js cordis.patch.yml icon.svg README.md README.en.md "dsh-telegram-control-${VERSION}/"
+          cp -r locale "dsh-telegram-control-${VERSION}/locale"
+          zip -r "dsh-telegram-control-${VERSION}.zip" "dsh-telegram-control-${VERSION}"
+          sha256sum "dsh-telegram-control-${VERSION}.zip" > "dsh-telegram-control-${VERSION}.zip.sha256"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dsh-telegram-control-*.zip
+            dsh-telegram-control-*.zip.sha256

@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url'
 /** Cordis 插件名（出现在 Loader 诊断里）。 */
 export const name = 'telegram-control'
 /** 插件版本。 */
-export const version = '1.3.3'
+export const version = '1.4.0'
 
 /** 所有能力都在调用时按需通过 `ctx.get()` 解析，因此不声明硬依赖。 */
 export const inject = []
@@ -506,24 +506,55 @@ function normalizeProxyUrl(server) {
 }
 
 /**
- * 读取 Windows 系统代理。
+ * 读取系统代理（auto 时用）。
  *
  * Node 的 `fetch`（undici）不认系统代理，而国内直连 api.telegram.org 基本都会超时，
- * 所以这里复用 WinINET 的设置做 CONNECT 隧道，插件无需重启也能联网。
+ * 所以按平台读系统代理设置做 CONNECT 隧道，插件无需重启也能联网：
+ * - win32:  注册表 WinINET（ProxyEnable / ProxyServer）
+ * - darwin: `scutil --proxy`（HTTPEnable / HTTPProxy / HTTPPort）
+ * - linux:  `http_proxy` / `https_proxy` / `all_proxy` 环境变量，其次 GNOME gsettings
  */
 function detectSystemProxy() {
-  if (process.platform !== 'win32') return ''
   if (Date.now() - proxyCache.at < 60_000) return proxyCache.value
   let value = ''
   try {
-    const out = execFileSync(
-      'reg',
-      ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings'],
-      { encoding: 'utf8', windowsHide: true, timeout: 4000 },
-    )
-    const enabled = /ProxyEnable\s+REG_DWORD\s+0x1/i.test(out)
-    const server = out.match(/ProxyServer\s+REG_SZ\s+([^\r\n]+)/i)?.[1] ?? ''
-    if (enabled && server) value = normalizeProxyUrl(server)
+    if (process.platform === 'win32') {
+      const out = execFileSync(
+        'reg',
+        ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings'],
+        { encoding: 'utf8', windowsHide: true, timeout: 4000 },
+      )
+      const enabled = /ProxyEnable\s+REG_DWORD\s+0x1/i.test(out)
+      const server = out.match(/ProxyServer\s+REG_SZ\s+([^\r\n]+)/i)?.[1] ?? ''
+      if (enabled && server) value = normalizeProxyUrl(server)
+    } else if (process.platform === 'darwin') {
+      const out = execFileSync('scutil', ['--proxy'], { encoding: 'utf8', timeout: 4000 })
+      const enabled = /HTTPEnable\s*:\s*1/.test(out)
+      const host = out.match(/HTTPProxy\s*:\s*([^\s]+)/)?.[1] ?? ''
+      const port = out.match(/HTTPPort\s*:\s*(\d+)/)?.[1] ?? ''
+      if (enabled && host && port) value = `http://${host}:${port}`
+    } else {
+      const envProxy =
+        process.env.http_proxy || process.env.HTTP_PROXY || process.env.https_proxy || process.env.HTTPS_PROXY
+        || process.env.all_proxy || process.env.ALL_PROXY || ''
+      if (envProxy) {
+        value = normalizeProxyUrl(String(envProxy).replace(/^socks[45h]?:\/\//i, 'http://'))
+      } else {
+        // GNOME 桌面系的系统代理（gsettings 有专门的 http scheme 键）
+        const mode = execFileSync(
+          'gsettings',
+          ['get', 'org.gnome.system.proxy', 'mode'],
+          { encoding: 'utf8', timeout: 4000 },
+        ).trim().replace(/^'|'$/g, '')
+        if (mode === 'manual') {
+          const host = execFileSync('gsettings', ['get', 'org.gnome.system.proxy.http', 'host'],
+            { encoding: 'utf8', timeout: 4000 }).trim().replace(/^'|'$/g, '')
+          const port = execFileSync('gsettings', ['get', 'org.gnome.system.proxy.http', 'port'],
+            { encoding: 'utf8', timeout: 4000 }).trim()
+          if (host && port && port !== '0') value = `http://${host}:${port}`
+        }
+      }
+    }
   } catch {
     /* 读不到就直连 */
   }
@@ -1967,15 +1998,21 @@ function askQuestion(rt, chatId, item, request) {
 // ────────────────────── 主机电源控制（关机 / 重启 / 锁屏） ──────────────────────
 
 const POWER_ACTIONS = {
-  shutdown: { label: '关机', verbs: ['/s'] },
-  reboot: { label: '重启', verbs: ['/r'] },
+  shutdown: true,
+  reboot: true,
 }
 
 function decodeOutput(buffer) {
+  // 非 Windows 平台输出一律 UTF-8，先按 UTF-8 严格解码；失败再退 GBK 兜 Windows 中文 cmd。
+  if (process.platform !== 'win32') return buffer.toString('utf8')
   try {
-    return new TextDecoder('gbk').decode(buffer)
+    return new TextDecoder('utf-8', { fatal: true }).decode(buffer)
   } catch {
-    return buffer.toString('utf8')
+    try {
+      return new TextDecoder('gbk').decode(buffer)
+    } catch {
+      return buffer.toString('utf8')
+    }
   }
 }
 
@@ -2020,9 +2057,32 @@ function powerInvocation(rt, args) {
   return { file: custom, args }
 }
 
+/**
+ * 按平台把 (action, seconds) 翻译成对应的关机/重启命令：
+ * - win32:  shutdown /s|/r /t <秒>，取消 /a（shutdown.exe 语义）
+ * - linux:  shutdown -h|-r [+分钟|now]，取消 -c（systemd shutdown 语义，粒度为分钟）
+ * - darwin: shutdown -h|-r [+分钟|now]（BSD shutdown 语法；macOS 无对应取消命令）
+ * `powerExec` 覆盖后不再做平台翻译——自定义实现自己负责参数。
+ */
+function platformPowerCall(action, seconds) {
+  const flag = action === 'reboot' ? '-r' : '-h'
+  if (process.platform === 'win32') {
+    const verb = action === 'reboot' ? '/r' : '/s'
+    return { file: 'shutdown', args: [verb, '/t', String(seconds)] }
+  }
+  const minutes = Math.max(1, Math.ceil(seconds / 60))
+  return { file: 'shutdown', args: seconds <= 60 ? [flag, 'now'] : [flag, `+${minutes}`] }
+}
+
+function platformCancelCall() {
+  if (process.platform === 'win32') return { file: 'shutdown', args: ['/a'] }
+  if (process.platform === 'darwin') return null // macOS shutdown 没有取消命令
+  return { file: 'shutdown', args: ['-c'] }
+}
+
 async function applyPower(rt, chatId, action, seconds) {
-  const meta = POWER_ACTIONS[action]
-  const call = powerInvocation(rt, [...meta.verbs, '/t', String(seconds)])
+  const custom = powerExecCall(rt, action, seconds)
+  const call = custom ?? platformPowerCall(action, seconds)
   const result = await runQuiet(call.file, call.args, 20_000)
   const now = Date.now()
   if (result.ok) {
@@ -2037,10 +2097,44 @@ async function applyPower(rt, chatId, action, seconds) {
   await sendText(rt, chatId, explainShutdown(result, t(rt, `action.${action}`)))
 }
 
+/** powerExec 给了就走自定义；按动作/秒数合成调用（Windows 语法，测试 fixture 按此解析）。 */
+function powerExecCall(rt, action, seconds) {
+  const custom = rt.cfg.powerExec
+  if (!custom) return null
+  const verb = action === 'reboot' ? '/r' : '/s'
+  const args = [verb, '/t', String(seconds)]
+  if (/\.(mjs|cjs|js)$/i.test(custom)) return { file: process.execPath, args: [custom, ...args] }
+  return { file: custom, args }
+}
+
 async function cancelPower(rt, chatId, notify = true) {
-  const call = powerInvocation(rt, ['/a'])
-  const result = await runQuiet(call.file, call.args, 20_000)
   const now = Date.now()
+  if (rt.cfg.powerExec) {
+    // powerExec 场景：自定义实现自己负责 /a 取消语义（测试 fixture 按此解析）
+    const custom = rt.cfg.powerExec
+    const call = /\.mjs$|\.cjs$|\.js$/i.test(custom)
+      ? { file: process.execPath, args: [custom, '/a'] }
+      : { file: custom, args: ['/a'] }
+    const customResult = await runQuiet(call.file, call.args, 20_000)
+    if (customResult.ok) {
+      rt.power = { pending: null, last: { action: 'cancel', at: now, ok: true } }
+      if (notify) await sendText(rt, chatId, t(rt, 'power.aborted'))
+      return { ok: true, text: t(rt, 'power.aborted') }
+    }
+    rt.power = { pending: null, last: { action: 'cancel', at: now, ok: false, code: customResult.code } }
+    const text = explainShutdown(customResult, t(rt, 'action.cancel'))
+    if (notify) await sendText(rt, chatId, text)
+    return { ok: false, text }
+  }
+  const call = platformCancelCall()
+  if (!call) {
+    // macOS：shutdown 没有取消命令；定时任务只能等它执行（已经是 now 的场景 seconds<=60）
+    rt.power = { pending: null, last: { action: 'cancel', at: now, ok: false, code: -2 } }
+    const text = t(rt, 'power.cancelUnsupported')
+    if (notify) await sendText(rt, chatId, text)
+    return { ok: false, text }
+  }
+  const result = await runQuiet(call.file, call.args, 20_000)
   let text
   if (result.ok) {
     rt.power = { pending: null, last: { action: 'cancel', at: now, ok: true } }
@@ -2150,7 +2244,10 @@ async function powerCommand(rt, chat, action, args) {
     await sendText(rt, chat.id, t(rt, 'power.usage'))
     return
   }
-  const meta = POWER_ACTIONS[action]
+  if (!POWER_ACTIONS[action]) {
+    await sendText(rt, chat.id, t(rt, 'power.usage'))
+    return
+  }
   const label = t(rt, `action.${action}`)
   if (seconds <= 10) {
     const token = randomUUID().slice(0, 8)

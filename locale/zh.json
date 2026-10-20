@@ -86,6 +86,7 @@
   "power.dash": "—",
   "power.scheduled": "⏻ 已安排 {seconds} 秒后{action}。\n反悔请发 /cancel（或 /shutdown cancel），会立刻撤销。",
   "power.aborted": "✅ 已取消计划中的关机 / 重启",
+  "power.cancelUnsupported": "⚠️ macOS 的 shutdown 没有取消命令，计划中的{action}只能等它执行（或提前断开电源/发 /shutdown 1 换取最短倒计时）。",
   "power.scheduledLog": "已安排 {seconds}s 后{action}",
   "power.abortedLog": "已取消计划中的电源操作",
   "power.usage": "用法：/shutdown [秒|now]\n例：/shutdown（默认 60 秒）/ /shutdown 300 / /shutdown now",
