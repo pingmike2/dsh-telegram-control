@@ -10,6 +10,27 @@ A **system-level** Telegram console for DSH: install it once and the whole DeepS
 
 > ⚠️ This plugin can run commands, power off the host and write files. Configure the `allowedUserIds` / `allowedChatIds` allowlists before going live, and turn off what you do not need via `allowShell` / `allowTools` / `allowFs` / `allowPower`.
 
+## Architecture
+
+```text
+Telegram mobile client
+  │  slash commands, text prompts, inline-button callbacks
+  ▼
+getUpdates long polling (proxyUrl: auto = read Windows system proxy / explicit http:// / none = direct)
+  ▼
+telegram-control (Host plugin, process-level singleton)
+  ├─ allowlist check (allowedUserIds / allowedChatIds — both set = intersection)
+  ├─ command dispatch (41 commands: sessions / chat / shell / files / approvals / plugins / power / i18n)
+  ├─ sessionController (Host API: create / prompt / follow / cancel / fork / rename / selectModel)
+  │    └─ follow stream dedup by seq → assistant answers stream back to Telegram; reasoning stays off-screen, only a typing heartbeat
+  ├─ approval/request & user-questions/request waterfalls → inline-button takeover (timeout fail-closed / handed back to Harness)
+  └─ local config page http://127.0.0.1:59777/ (CSRF-protected; GET /config /status /health, POST /save)
+       └─ edits telegram-control.json → hot-reloaded every reloadSeconds (default 5s), no DSH restart
+
+State on disk: %DSH_HOME%\telegram-control-state.json (chat↔session bindings)
+               %DSH_HOME%\telegram-control-status.json (runtime snapshot, see “Runtime status”)
+```
+
 ## Install
 
 ```text
@@ -41,9 +62,49 @@ Fill in `botToken`, `allowedUserIds` / `allowedChatIds`, proxy and toggles (incl
   "forwardReasoning": false,
   "thinkingStatus": "typing",
   "format": "markdown",
-  "notifyToolFailures": false
+  "notifyToolFailures": false,
+  "allowShell": true,
+  "allowTools": true,
+  "allowFs": true,
+  "allowPower": true,
+  "powerDefaultSeconds": 60,
+  "powerExec": "",
+  "shellPath": "",
+  "maxMessageChars": 3600,
+  "approvalTimeoutSeconds": 120,
+  "commandTimeoutSeconds": 120,
+  "reloadSeconds": 5
 }
 ```
+
+### Full configuration reference (real names + real defaults, as read by the code)
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | Master switch; `false` stops polling, status shows `disabled` |
+| `lang` | `zh` | UI language, any code present in `locale/*.json` (currently `en` / `zh`); invalid values fall back to `zh` |
+| `botToken` | empty | Token from @BotFather; while empty the plugin stays in `waiting-token` |
+| `apiBaseUrl` | `https://api.telegram.org` | Bot API base URL (point at a third-party relay if needed) |
+| `proxyUrl` | `auto` | `auto`=read Windows system proxy; explicit `http://host:port`; `none`/`off`/`direct`=force direct |
+| `configPort` | `59777` | Local config page port, `0`=disabled; binds to `127.0.0.1` only |
+| `allowedUserIds` / `allowedChatIds` | empty | Allowlists; when both are set they intersect, numbers only |
+| `workingDirectory` | empty | Default working directory; empty = DSH default |
+| `agentPreset` | empty | Agent preset for new sessions; empty = `standard` |
+| `pollTimeoutSeconds` | `25` | `getUpdates` long-poll duration (1–50) |
+| `maxMessageChars` | `3600` | Per-message cap (200–4096); longer output is split into chunks |
+| `answerApprovals` | `false` | Take over tool approvals → inline buttons; timeout counts as rejection |
+| `answerQuestions` | `false` | Take over `ask_user_question` → buttons / free-text replies |
+| `forwardReasoning` | `false` | After `/reasoning on`, reasoning content is pushed to Telegram |
+| `thinkingStatus` | `typing` | `typing` / `message` / `off` |
+| `format` | `markdown` | `markdown` (MarkdownV2 with plain-text fallback) / `plain` |
+| `notifyToolFailures` | `false` | Whether tool failures are pushed to Telegram |
+| `approvalTimeoutSeconds` | `120` | How long approval buttons wait (10–3600) |
+| `commandTimeoutSeconds` | `120` | Timeout for `/shell` and `/tool` (1–3600) |
+| `allowShell` / `allowTools` / `allowFs` / `allowPower` | `true` | Four capability switches |
+| `powerDefaultSeconds` | `60` | Countdown when `/shutdown` has no argument (0–86400) |
+| `powerExec` | empty | Custom shutdown binary path; `.js/.mjs/.cjs` runs under the current Node (used by tests) |
+| `shellPath` | empty | Custom shell; empty = try `pwsh`→`powershell`→`cmd` on Windows, `/bin/bash -lc` elsewhere |
+| `reloadSeconds` | `5` | Config hot-reload interval (2–600) |
 
 1. Get a token from @BotFather and put it in `botToken`.
 2. Send `/myid` to your bot and copy the `user_id` / `chat_id` into the allowlists — **when both allowlists are empty every message is rejected**, except `/myid` and `/help` (which exist exactly so you can bootstrap).
@@ -95,7 +156,7 @@ Every supervision tick rewrites `%DSH_HOME%\telegram-control-status.json`:
 
 ```json
 {
-  "version": "1.2.0",
+  "version": "1.3.3",
   "state": "running",
   "pid": 3900,
   "startedAt": 1792418496591,
@@ -165,7 +226,37 @@ Safety design:
 - **Direct tool calls**: `ctx.get('tools').execute({ callId, name, arguments, agent, signal })` with a timeout AbortSignal.
 - **Shell**: `node:child_process` spawned directly (on Windows it tries `pwsh` → `powershell` → `cmd`), output capped at 200KB, timeout configurable.
 - **State persistence**: chat → session bindings are written to `%DSH_HOME%\telegram-control-state.json` (800ms debounce).
-- **Safety switches**: `allowShell` / `allowTools` / `allowFs` / allowlists; by default everything requires an explicitly authorized user.
+- **Safety switches**: `allowShell` / `allowTools` / `allowFs` default to **on**, the allowlists default to **deny all** — capability switches and the identity allowlist are two separate gates, check both before going live.
+
+## Ops quick reference
+
+```text
+# Runtime status (state / errors / botCommands heartbeat)
+cat %DSH_HOME%\telegram-control-status.json
+
+# Config page health probe
+curl http://127.0.0.1:59777/health
+
+# Change config on the spot (hot reload, no DSH restart)
+notepad %DSH_HOME%\telegram-control.json
+
+# Full reset: delete both files, restart DSH — config re-templates, bindings cleared
+del %DSH_HOME%\telegram-control.json %DSH_HOME%\telegram-control-state.json
+```
+
+### “Everything says unauthorized”
+
+With both allowlists empty every message is rejected (`/myid` and `/help` excepted).
+Send `/myid` to get your `user_id` / `chat_id`, then put either of them in
+`allowedUserIds` / `allowedChatIds`. When **both lists are non-empty they intersect** —
+listing your chats but not your `user_id` still gets you rejected.
+
+### “Typing…” keeps showing but no answer arrives
+
+The heartbeat renews every 4s and gives up after 3 minutes without events; if
+`turn/end` has passed with no message, check `stats.lastError` in the status file,
+turn on `notifyToolFailures` for one round of tool-failure pushes, or use
+`/reasoning on` to watch the reasoning stream and find the hang.
 
 ## Tests
 
@@ -183,6 +274,41 @@ Currently **all 141 assertions pass**. The suite points `powerExec` at `test/fix
 - No `Config` schema: avoids depending on `@deepseek-ai/schemastery`; config is a hot-reloaded JSON file you can edit without restarting.
 - No transport other than long polling: Bot API `getUpdates` needs no public ingress, so it runs on a laptop.
 
+## Notes
+
+- **Deployment shape**: Windows-first plugin (system-proxy detection, `shutdown.exe` power control, PowerShell/cmd shells are all picked by `process.platform`); Linux/macOS fall back to `systemctl` / `pmset` / `loginctl`, and automatic proxy detection does nothing there — set `proxyUrl` explicitly.
+- **Secret location**: `botToken` lives only in `%DSH_HOME%\telegram-control.json` (a local file) and the DSH profile config; it is never echoed into logs or the status file (which keeps only the `id:***last4` form). For a local check use something like `grep -o '"botToken[^,]*'` to grab just the value — don’t paste the whole line around.
+- **Config page is local-only**: `configPort` binds to `127.0.0.1`, unreachable from other machines on the LAN; `POST /save` is guarded by a process-level CSRF token. Setting the port to `0` shuts the page down completely and you manage config by file.
+- **`/shell`, `/write`, `/tool` hand over the host**: the allowlist only knows Telegram account ids — a stolen account means a bare host. If unsure, switch `allowShell` / `allowPower` off first and re-enable on demand.
+- **Concurrency semantics**: messages from the same chat are processed sequentially (one queue per chat); `/pause` stops command dispatch but prompt delivery and event streaming keep flowing.
+- **Uninstall**: after `plugin_manager` removal (or deleting the `cordis.patch.yml` row) and a DSH restart, the status file flips to `stopped`; the three `telegram-control*.json` files under `%DSH_HOME%` must be cleaned up manually.
+
+## Acknowledgements
+
+| Project | What it does here |
+|---|---|
+| [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) | The upstream host — the Host-plugin mechanism and the whole `sessionController` / `tools` / `pluginManager` Host API come from it |
+| [cordis](https://github.com/cordiverse/cordis) | The "Everything is a Plugin" kernel: `apply(ctx, config)`, waterfall events, `ctx.effect` lifecycle |
+
+## Disclaimer
+
+This project is for learning, research and personal technical experiments only. Do not
+use it in any way that may violate third-party terms of service (ToS) or applicable
+laws and regulations.
+
+- This project is not affiliated with or endorsed by DeepSeek, Telegram or any other
+  upstream provider.
+- This project can execute shell commands, read and write files and power the host off —
+  the actual risk boundary is decided by the user’s allowlist configuration and account
+  security, and any resulting consequences are borne by the user.
+- Availability of the Telegram Bot API and DeepSeek Harness depends entirely on upstream
+  policies and may change or break at any time (rate limits, protocol changes, removal);
+  no guarantee of continuity or stability is given.
+- This project collects and stores no user data; state and config stay entirely in the
+  local `%DSH_HOME%` directory.
+- The software itself is provided "AS IS" under the MIT license, without any warranty
+  (see [LICENSE](./LICENSE)).
+
 ## License
 
-MIT
+[MIT](./LICENSE) © 2026 [pingmike2](https://github.com/pingmike2)

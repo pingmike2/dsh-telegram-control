@@ -10,6 +10,27 @@ DSH 的**系统级** Telegram 控制台：装上之后，整个 DeepSeek Harness
 
 > ⚠️ 这个插件能远程执行命令、关机、改文件。上线前务必配好 `allowedUserIds` / `allowedChatIds` 白名单，不用的能力用 `allowShell` / `allowTools` / `allowFs` / `allowPower` 关掉。
 
+## 架构
+
+```text
+Telegram 手机端
+  │  /命令、文本 prompt、内联按钮回调
+  ▼
+getUpdates 长轮询（proxyUrl: auto=读 Windows 系统代理 / 显式 http:// / none=直连）
+  ▼
+telegram-control（Host 插件，process 级单例）
+  ├─ 白名单校验（allowedUserIds / allowedChatIds，两者都填取交集）
+  ├─ 命令分发（41 条：会话 / 对话 / shell / 文件 / 审批 / 插件 / 电源 / i18n）
+  ├─ sessionController（Host API：create / prompt / follow / cancel / fork / rename / selectModel）
+  │    └─ follow 流按 seq 去重 → assistant 回答回流 Telegram；思考过程不上屏，只发 typing 心跳
+  ├─ approval/request 与 user-questions/request waterfall → 内联按钮接管（超时 fail-closed / 交回 Harness）
+  └─ 本机配置页 http://127.0.0.1:59777/（CSRF 保护，GET /config /status /health，POST /save）
+       └─ 改 telegram-control.json → 每 reloadSeconds(默认 5s) 热加载，无需重启 DSH
+
+状态落盘：%DSH_HOME%\telegram-control-state.json（chat↔session 绑定）
+         %DSH_HOME%\telegram-control-status.json（运行快照，深度见「运行状态」）
+```
+
 ## 安装
 
 ```text
@@ -41,9 +62,49 @@ plugin_manager install_bundle  target = <本目录绝对路径>
   "forwardReasoning": false,
   "thinkingStatus": "typing",
   "format": "markdown",
-  "notifyToolFailures": false
+  "notifyToolFailures": false,
+  "allowShell": true,
+  "allowTools": true,
+  "allowFs": true,
+  "allowPower": true,
+  "powerDefaultSeconds": 60,
+  "powerExec": "",
+  "shellPath": "",
+  "maxMessageChars": 3600,
+  "approvalTimeoutSeconds": 120,
+  "commandTimeoutSeconds": 120,
+  "reloadSeconds": 5
 }
 ```
+
+### 配置项全集（真名 + 真默认值，与代码一一对应）
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `enabled` | `true` | 插件总开关，`false` 时轮询停、状态 `disabled` |
+| `lang` | `zh` | 界面语言，取 `locale/*.json` 里支持的代码（当前 `en` / `zh`），非法值回退 `zh` |
+| `botToken` | 空 | BotFather 的 token；为空则插件停在 `waiting-token` |
+| `apiBaseUrl` | `https://api.telegram.org` | Bot API 地址（第三方中转可改） |
+| `proxyUrl` | `auto` | `auto`=读 Windows 系统代理；显式 `http://host:port`；`none`/`off`/`direct`=强制直连 |
+| `configPort` | `59777` | 本机配置页端口，`0`=关闭；只监听 `127.0.0.1` |
+| `allowedUserIds` / `allowedChatIds` | 空 | 白名单；两者都非空取交集，都以数字填 |
+| `workingDirectory` | 空 | 默认工作目录；留空用 DSH 默认 |
+| `agentPreset` | 空 | 新会话用的 agent preset；留空 `standard` |
+| `pollTimeoutSeconds` | `25` | `getUpdates` 长轮询时长（1–50） |
+| `maxMessageChars` | `3600` | 单条消息上限（200–4096），超出自动分段 |
+| `answerApprovals` | `false` | 接管工具审批 → Telegram 内联按钮，超时按拒绝处理 |
+| `answerQuestions` | `false` | 接管 `ask_user_question` → 按钮/自由文本 |
+| `forwardReasoning` | `false` | `/reasoning on` 后推送思考内容 |
+| `thinkingStatus` | `typing` | `typing` / `message` / `off` |
+| `format` | `markdown` | `markdown`（MarkdownV2+纯文本兜底）/ `plain` |
+| `notifyToolFailures` | `false` | 工具失败是否推送到 Telegram |
+| `approvalTimeoutSeconds` | `120` | 审批按钮等待上限（10–3600） |
+| `commandTimeoutSeconds` | `120` | `/shell` `/tool` 执行超时（1–3600） |
+| `allowShell` / `allowTools` / `allowFs` / `allowPower` | `true` | 四类能力开关，按需关闭 |
+| `powerDefaultSeconds` | `60` | `/shutdown` 无参数时的倒计时（0–86400） |
+| `powerExec` | 空 | 自定义关机命令路径；`.js/.mjs/.cjs` 用当前 Node 执行（测试注入用） |
+| `shellPath` | 空 | 自定义 shell；留空 Windows 依次试 `pwsh`→`powershell`→`cmd`，其余平台 `/bin/bash -lc` |
+| `reloadSeconds` | `5` | 配置热加载间隔（2–600） |
 
 1. 找 @BotFather 要 token，填 `botToken`。
 2. 给 Bot 发 `/myid`，把你看到的 `user_id` / `chat_id` 填进白名单 —— **两个白名单都为空时一切消息都会被拒绝**，`/myid` 和 `/help` 除外（用于首次取号）。
@@ -95,7 +156,7 @@ Node 的 `fetch`（undici）**不读 Windows 系统代理**，所以在需要代
 
 ```json
 {
-  "version": "1.2.0",
+  "version": "1.3.3",
   "state": "running",
   "pid": 3900,
   "startedAt": 1792418496591,
@@ -165,7 +226,36 @@ Node 的 `fetch`（undici）**不读 Windows 系统代理**，所以在需要代
 - **工具直调**：`ctx.get('tools').execute({ callId, name, arguments, agent, signal })`，带超时 AbortSignal。
 - **shell**：`node:child_process` 直接起进程（Windows 依次尝试 `pwsh` → `powershell` → `cmd`），输出上限 200KB、可设超时。
 - **状态持久化**：chat → session 绑定写入 `%DSH_HOME%\telegram-control-state.json`（防抖 800ms）。
-- **安全开关**：`allowShell` / `allowTools` / `allowFs` / 白名单；默认全部需要显式授权用户。
+- **安全开关**：`allowShell` / `allowTools` / `allowFs` 默认全开，白名单默认全拒——能力开关与身份白名单是两道独立的门，上线时都要过一眼。
+
+## 快速参考（运维）
+
+```text
+# 查运行状态（state / errors / botCommands 心跳都在这）
+cat %DSH_HOME%\telegram-control-status.json
+
+# 配置页探活
+curl http://127.0.0.1:59777/health
+
+# 改配置即时生效（热加载，无需重启 DSH）
+notepad %DSH_HOME%\telegram-control.json
+
+# 彻底重置：两个文件删掉后重启 DSH，配置会重新生成模板、绑定清空
+del %DSH_HOME%\telegram-control.json %DSH_HOME%\telegram-control-state.json
+```
+
+### 「一律未授权」怎么办
+
+两个白名单都为空时所有消息都被拒绝（`/myid` 和 `/help` 除外）。给 Bot 发 `/myid` 拿到
+`user_id` / `chat_id`，填进 `telegram-control.json` 的 `allowedUserIds` / `allowedChatIds`
+任一个即可。`allowedUserIds` 与 `allowedChatIds` **同时非空时取交集**——只填两个 chat 也
+必须把对应用户的 user_id 填进去，否则会被拒。
+
+### 「正在输入…」亮着但没有回答
+
+状态心跳 4 秒一续、最多撑 3 分钟无事件；若 `turn/end` 已到但仍无消息，看状态文件
+`stats.lastError`，把 `notifyToolFailures` 打开收一轮工具失败推送，或 `/reasoning on`
+直接看思考流定位卡点。
 
 ## 测试
 
@@ -183,6 +273,36 @@ npm test          # 等价于 node test/tg-control.test.mjs
 - 不用 `Config` schema：避免引入 `@deepseek-ai/schemastery` 依赖，配置走热加载 JSON，改完无需重启。
 - 不用长轮询以外的接入方式：Bot API `getUpdates` 不需要公网入口，本机即可运行。
 
+## 注意事项
+
+- **部署形态**：这是 Windows 优先的插件（系统代理探测、`shutdown.exe` 电源控制、PowerShell/cmd shell 均按 `process.platform` 区分）；Linux/macOS 走 `systemctl` / `pmset` / `loginctl` 兜底，代理自动探测在非 Windows 上不生效，需要显式给 `proxyUrl`。
+- **密钥位置**：`botToken` 只存在 `%DSH_HOME%\telegram-control.json`（本地文件）与 DSH profile 配置里，不回显到日志与状态文件（状态里只保留 `id:***末4位`）。排查技巧：自查用 `grep -o '"botToken[^,]*'` 只取值，别整段贴出去。
+- **配置页只监听本机**：`configPort` 绑定 `127.0.0.1`，局域网内其他设备访问不到；`/save` 有进程级 CSRF token 保护。端口改成 `0` 可彻底关掉配置页，用文件方式管理配置。
+- **`/shell` `/write` `/tool` 等于把主机交出去**：白名单只认 Telegram 账号 id，账号被盗即主机裸奔。不确定时先把 `allowShell` / `allowPower` 关掉，按需再开。
+- **并发语义**：同一 chat 的消息排队串行处理（每 chat 一条队列）；`/pause` 暂停命令分发但 prompt 下发与事件回流不受影响。
+- **卸载**：`plugin_manager` 卸载或删除 `cordis.patch.yml` 行后重启 DSH，状态文件写成 `stopped`；`%DSH_HOME%` 下的三个 `telegram-control*.json` 需手动清理。
+
+## 致谢 (Acknowledgements)
+
+| 项目 | 在本项目里干什么活 |
+|---|---|
+| [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) | 本插件的上游宿主——Host 插件机制、sessionController / tools / pluginManager 全套 Host API 都来自它 |
+| [cordis](https://github.com/cordiverse/cordis) | 「Everything is a Plugin」的内核：`apply(ctx, config)`、waterfall 事件、`ctx.effect` 生命周期 |
+
+## 免责声明 (Disclaimer)
+
+本项目仅供学习、研究与个人技术实验使用，请勿用于任何可能违反第三方服务条款（ToS）
+或适用的法律法规的场景。
+
+- 本项目与 DeepSeek、Telegram 等任何上游服务商均无关联、无背书（not affiliated
+  with or endorsed by）。
+- 本项目可远程执行 shell、读写文件、关闭主机——由使用者的白名单配置及其账号安全
+  决定实际风险边界，由此产生的任何后果由使用者自行承担。
+- Telegram Bot API 与 DeepSeek Harness 的可用性取决于上游策略，随时可能变化或失效
+  （限流、改协议、下架均有可能），本项目不对其持续性、稳定性作任何担保。
+- 本项目不收集、不存储任何用户数据；状态与配置全部落在本机 `%DSH_HOME%` 目录。
+- 软件本体按 MIT 协议 "AS IS" 提供，不带任何担保（见 [LICENSE](./LICENSE)）。
+
 ## License
 
-MIT
+[MIT](./LICENSE) © 2026 [pingmike2](https://github.com/pingmike2)
