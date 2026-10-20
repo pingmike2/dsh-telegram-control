@@ -61,7 +61,7 @@ On startup the plugin calls `setMyCommands` and registers **41 commands** across
 
 While the model reasons it emits a flood of `reasoning` deltas. Those **never reach the chat** (the Web UI uses them; Telegram does not need them). The plugin does exactly two things:
 
-1. Sends `sendChatAction: typing` — the familiar “typing…” indicator, throttled to once every 4 seconds so it never floods.
+1. Sends `sendChatAction: typing` — the familiar “typing…” indicator. **As long as the turn is running the heartbeat renews it every 4 seconds**, so even ten minutes of tool calls keeps it lit and a remote glance tells you DSH is still working; it stops at `turn/end`, and after 3 minutes without any session event it also shuts itself off.
 2. Sends the `text` block of the final `assistant/message` as the answer.
 
 **Tool calls stay off screen as well**: `tool/call` (the `🔧 edit` / `🔧 pwsh` kind) only refreshes the typing indicator and sends no message at all; `tool/result` **failures are not forwarded by default** either — `ToolNotFoundError` / `WebError` and friends are intermediate states the agent retries or works around, so they go to the log instead of your phone. Turn on `notifyToolFailures` when you are debugging and you get a single `⚠️ Tool failed: …` line. On your phone you therefore always see: status moving → final answer.
@@ -173,9 +173,9 @@ Safety design:
 npm test          # same as node test/tg-control.test.mjs
 ```
 
-A fake Bot API (a real http server speaking `getUpdates` long-polling) plus fake Cordis ctx / `sessionController` / `tools` / `pluginManager` run the real plugin end to end: command-menu registration, auth, command dispatch, prompt bridging, streaming event relay, **reasoning kept off screen with typing throttling**, language switching, shell / file / direct tool calls, approval and question inline buttons, session naming and switching, power control (including the confirmation flow and `allowPower` off), config-page CSRF and saving, Markdown rendering with the plain-text fallback, hot reload, and uninstall cleanup.
+A fake Bot API (a real http server speaking `getUpdates` long-polling) plus fake Cordis ctx / `sessionController` / `tools` / `pluginManager` run the real plugin end to end: command-menu registration, auth, command dispatch, prompt bridging, streaming event relay, **reasoning kept off screen with a continuous typing heartbeat**, language switching, shell / file / direct tool calls, approval and question inline buttons, session naming and switching, power control (including the confirmation flow and `allowPower` off), config-page CSRF and saving, Markdown rendering with the plain-text fallback, hot reload, and uninstall cleanup.
 
-Currently **all 138 assertions pass**. The suite points `powerExec` at `test/fixtures/fake-shutdown.mjs`, so **it can never really power off the machine**.
+Currently **all 141 assertions pass**. The suite points `powerExec` at `test/fixtures/fake-shutdown.mjs`, so **it can never really power off the machine**.
 
 ## Design trade-offs
 

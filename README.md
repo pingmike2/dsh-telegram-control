@@ -61,7 +61,7 @@ plugin_manager install_bundle  target = <本目录绝对路径>
 
 模型在思考时会产生大量 `reasoning` 增量。这些**一律不上屏**（Web UI 用它们，Telegram 不需要），插件只做两件事：
 
-1. 给聊天发一个 `sendChatAction: typing` —— 手机上就是「对方正在输入…」，节流 4 秒一次，不会刷屏。
+1. 给聊天发一个 `sendChatAction: typing` —— 手机上就是「对方正在输入…」。**这一轮只要还在跑，心跳就每 4 秒续一次**，中间连续跑十分钟工具也是常亮状态，远程瞄一眼就知道 DSH 没闲着；`turn/end` 到就停，超过 3 分钟没有任何会话事件也会自动收掉。
 2. 最终 `assistant/message` 的 `text` 块才是回答，正常发出来。
 
 **工具调用同样不上屏**：`tool/call`（`🔧 edit`、`🔧 pwsh` 那种）只用来刷新「正在输入…」状态，一条消息都不发；`tool/result` 的**失败默认也不推**——`ToolNotFoundError`、`WebError` 这类是 agent 自己会重试或绕过的中间态，推到手机上纯噪音，只写进日志。要排查时把 `notifyToolFailures` 打开，才会收到一行 `⚠️ 工具失败：…`。所以手机上看到的永远是：状态在动 → 最终回答。
@@ -175,7 +175,7 @@ npm test          # 等价于 node test/tg-control.test.mjs
 
 本地起一个假的 Bot API（真 http server，走 `getUpdates` 长轮询）+ 假的 Cordis ctx / `sessionController` / `tools` / `pluginManager`，真跑插件：命令菜单注册、鉴权、命令分发、prompt 桥接、流式事件回流、**思考过程不上屏与 typing 节流**、语言切换、shell / 文件 / 工具直调、审批与提问内联按钮、会话命名与切换、电源控制（含二次确认与 `allowPower` 关闭）、配置页 CSRF 与保存、Markdown 渲染与纯文本兜底、热加载、卸载清理。
 
-当前：**138 项断言全部通过**。测试用 `powerExec` 指向 `test/fixtures/fake-shutdown.mjs`，**绝不会真的关机**。
+当前：**141 项断言全部通过**。测试用 `powerExec` 指向 `test/fixtures/fake-shutdown.mjs`，**绝不会真的关机**。
 
 ## 设计取舍
 

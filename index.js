@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url'
 /** Cordis 插件名（出现在 Loader 诊断里）。 */
 export const name = 'telegram-control'
 /** 插件版本。 */
-export const version = '1.3.2'
+export const version = '1.3.3'
 
 /** 所有能力都在调用时按需通过 `ctx.get()` 解析，因此不声明硬依赖。 */
 export const inject = []
@@ -880,6 +880,7 @@ ${message ? `<p class="msg">${escapeHtml(message)}</p>` : ''}
     <label class="check"><input type="checkbox" name="forwardReasoning"${checked(values.forwardReasoning)}> 把模型思考过程也发到 Telegram（默认关闭）</label>
     <label>思考时的状态提示</label>
     <select name="thinkingStatus">${thinkingOptionsHtml(values.thinkingStatus)}</select>
+    <p class="hint">「正在输入…」在整轮工作期间会持续续命（每 4 秒一次），远程瞄一眼就知道 DSH 还在干活。</p>
     <label>消息格式</label>
     <select name="format">${formatOptionsHtml(values.format)}</select>
     <p class="hint">markdown = 标题加粗、表格与代码块等宽、保留字符自动转义；解析失败会自动退回纯文本。</p>
@@ -1061,6 +1062,7 @@ function getChat(rt, chatId) {
   if (!chat) {
     chat = {
       id: chatId,
+      rt,
       sessionId: undefined,
       cwd: undefined,
       userId: undefined,
@@ -1107,6 +1109,10 @@ function createRuntime(ctx, cfg, logger, statePath) {
     powerConfirm: new Map(),
     // chatId → 上次发送「正在输入…」状态的时间戳（节流用）
     thinkingAt: new Map(),
+    // chatId → 「正在输入…」心跳定时器；只要这一轮还在跑就一直续命
+    typingTimers: new Map(),
+    // chatId → 最近一次会话事件的时间戳，用来判断这一轮是不是已经凉了
+    typingActiveAt: new Map(),
   }
   rt.start = async () => {
     await loadState(rt)
@@ -1138,6 +1144,9 @@ function createRuntime(ctx, cfg, logger, statePath) {
     rt.pendingText.clear()
     rt.powerConfirm.clear()
     rt.thinkingAt.clear()
+    for (const timer of rt.typingTimers.values()) clearInterval(timer)
+    rt.typingTimers.clear()
+    rt.typingActiveAt.clear()
     if (rt.saveTimer) {
       clearTimeout(rt.saveTimer)
       rt.saveTimer = null
@@ -1480,6 +1489,8 @@ function stopFollower(chat) {
     chat.followerAC = null
   }
   chat.follower = null
+  // 跟随者停了就不会再有 turn/end 事件，心跳得一起收掉，否则状态一直亮着
+  if (chat.rt) stopThinkingHeartbeat(chat.rt, chat.id)
 }
 
 function ensureFollower(rt, chat) {
@@ -1554,17 +1565,60 @@ function reasoningText(content) {
 /** 思考状态节流：TG 的 typing 状态只保持约 5 秒，这里最多每 4 秒发一次。 */
 const THINKING_PULSE_MS = 4000
 
+/** 「正在输入…」心跳间隔：比 TG 的 5 秒有效期短一点，保证状态不断档。 */
+const TYPING_HEARTBEAT_MS = 4000
+
+/** 超过这么久没有任何会话事件，就认为这一轮已经结束/死掉，停掉心跳，别一直骗人。 */
+const TYPING_IDLE_MS = 180_000
+
+function stopThinkingHeartbeat(rt, chatId) {
+  const key = String(chatId)
+  const timer = rt.typingTimers.get(key)
+  if (timer) clearInterval(timer)
+  rt.typingTimers.delete(key)
+}
+
+/**
+ * 会话一开始工作就挂上心跳：TG 的「正在输入…」只亮 5 秒，靠事件触发撑不满
+ * 一次长工具调用，于是每 4 秒续一次，直到 turn/end 或长时间无事件。
+ */
+function startThinkingHeartbeat(rt, chatId) {
+  stopThinkingHeartbeat(rt, chatId)
+  const key = String(chatId)
+  rt.typingActiveAt.set(key, Date.now())
+  if (rt.cfg.thinkingStatus === 'off') return
+  const tick = () => {
+    if (rt.ac.signal.aborted || rt.cfg.thinkingStatus === 'off') {
+      stopThinkingHeartbeat(rt, chatId)
+      return
+    }
+    const last = rt.typingActiveAt.get(key) ?? 0
+    if (Date.now() - last > TYPING_IDLE_MS) {
+      stopThinkingHeartbeat(rt, chatId)
+      return
+    }
+    rt.thinkingAt.set(key, Date.now())
+    void sendTyping(rt, chatId)
+  }
+  const timer = setInterval(tick, TYPING_HEARTBEAT_MS)
+  timer.unref?.()
+  rt.typingTimers.set(key, timer)
+  tick()
+}
+
 /**
  * 让 Telegram 显示「对方正在输入…」状态。
  * 思考过程本身不上屏，只用一个状态提示"机器人在想"。
  */
 async function pulseThinking(rt, chatId, force = false) {
   const mode = rt.cfg.thinkingStatus
+  const key = String(chatId)
+  rt.typingActiveAt.set(key, Date.now())
   if (mode === 'off') return
   const now = Date.now()
-  const last = rt.thinkingAt.get(chatId) ?? 0
+  const last = rt.thinkingAt.get(key) ?? 0
   if (!force && now - last < THINKING_PULSE_MS) return
-  rt.thinkingAt.set(chatId, now)
+  rt.thinkingAt.set(key, now)
   await sendTyping(rt, chatId)
 }
 
@@ -1595,7 +1649,9 @@ async function onSessionEvent(rt, chat, event) {
     }
     case 'turn/start':
     case 'step/start': {
-      await pulseThinking(rt, chat.id)
+      // 一轮开始就把心跳挂上：只要 DSH 还在干活，TG 顶部就一直是「正在输入…」，
+      // 远程看一眼就知道机器没闲着。
+      startThinkingHeartbeat(rt, chat.id)
       return
     }
     case 'tool/call': {
@@ -1618,6 +1674,7 @@ async function onSessionEvent(rt, chat, event) {
       return
     }
     case 'turn/end': {
+      stopThinkingHeartbeat(rt, chat.id)
       const reason = event.data?.reason ?? { kind: 'completed' }
       await sendText(rt, chat.id, describeTurnEnd(reason))
       return
@@ -1689,7 +1746,8 @@ async function promptSession(rt, chat, text) {
     return
   }
   ensureFollower(rt, chat)
-  if (rt.cfg.thinkingStatus !== 'off') await sendTyping(rt, chat.id)
+  // 下发成功前就点亮心跳：从按下发送到 turn/start 之间也不留空白
+  startThinkingHeartbeat(rt, chat.id)
   const admission = admissionSignal(rt)
   try {
     await controller.prompt(
@@ -1703,6 +1761,7 @@ async function promptSession(rt, chat, text) {
       admission.signal,
     )
   } catch (error) {
+    stopThinkingHeartbeat(rt, chat.id)
     const reason = error?.message || String(error)
     await sendText(rt, chat.id, `❌ 下发失败：${reason}\n会话：${sessionId}`)
   } finally {

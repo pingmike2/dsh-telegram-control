@@ -565,6 +565,24 @@ try {
   emitSession(firstSession.sessionId, 'turn/end', { reason: { kind: 'completed' } })
   await waitFor(() => hasText(CHAT_ID, (text) => text === '✅ 本轮完成'), '回合结束提示')
 
+  // ───────────────────── 工作中的「正在输入…」心跳 ─────────────────────
+
+  section('工作期间持续 typing')
+  {
+    const before = typingCount()
+    emitSession(firstSession.sessionId, 'turn/start', {})
+    await sleep(9000)
+    // 9 秒里没有任何事件，只靠心跳续命：至少续了两次
+    ok(typingCount() - before >= 2, '整轮工作期间持续刷新「正在输入…」', `${before} → ${typingCount()}`)
+    ok(!hasText(CHAT_ID, (text) => text.includes('正在输入')), 'typing 只是状态，不发消息')
+
+    emitSession(firstSession.sessionId, 'turn/end', { reason: { kind: 'completed' } })
+    await sleep(1200)
+    const settled = typingCount()
+    await sleep(5200)
+    ok(typingCount() === settled, '回合结束后心跳停止', `${settled} → ${typingCount()}`)
+  }
+
   // ───────────────────── 思考过程 ─────────────────────
 
   section('思考过程只显示状态')
