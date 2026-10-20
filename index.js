@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url'
 /** Cordis 插件名（出现在 Loader 诊断里）。 */
 export const name = 'telegram-control'
 /** 插件版本。 */
-export const version = '1.3.1'
+export const version = '1.3.2'
 
 /** 所有能力都在调用时按需通过 `ctx.get()` 解析，因此不声明硬依赖。 */
 export const inject = []
@@ -51,6 +51,7 @@ const DEFAULTS = {
   forwardReasoning: false,
   thinkingStatus: 'typing',
   format: 'markdown',
+  notifyToolFailures: false,
   approvalTimeoutSeconds: 120,
   commandTimeoutSeconds: 120,
   allowShell: true,
@@ -465,6 +466,7 @@ function normalizeConfig(staticConfig, fileConfig) {
       ? String(merged.thinkingStatus)
       : 'typing',
     format: ['markdown', 'plain'].includes(String(merged.format)) ? String(merged.format) : 'markdown',
+    notifyToolFailures: merged.notifyToolFailures === true,
     approvalTimeoutSeconds: clampInt(merged.approvalTimeoutSeconds, 10, 3600, DEFAULTS.approvalTimeoutSeconds),
     commandTimeoutSeconds: clampInt(merged.commandTimeoutSeconds, 1, 3600, DEFAULTS.commandTimeoutSeconds),
     allowShell: merged.allowShell !== false,
@@ -881,6 +883,7 @@ ${message ? `<p class="msg">${escapeHtml(message)}</p>` : ''}
     <label>消息格式</label>
     <select name="format">${formatOptionsHtml(values.format)}</select>
     <p class="hint">markdown = 标题加粗、表格与代码块等宽、保留字符自动转义；解析失败会自动退回纯文本。</p>
+    <label class="check"><input type="checkbox" name="notifyToolFailures"${checked(values.notifyToolFailures)}> 工具失败也推到 Telegram（默认关闭，只在排查问题时开）</label>
     <label class="check"><input type="checkbox" name="allowShell"${checked(values.allowShell)}> 允许 /shell</label>
     <label class="check"><input type="checkbox" name="allowTools"${checked(values.allowTools)}> 允许 /tool</label>
     <label class="check"><input type="checkbox" name="allowFs"${checked(values.allowFs)}> 允许 /read /write /ls</label>
@@ -971,6 +974,7 @@ function startConfigServer(options) {
             format: ['markdown', 'plain'].includes(String(form.get('format')))
               ? String(form.get('format'))
               : 'markdown',
+            notifyToolFailures: form.has('notifyToolFailures'),
             allowShell: form.has('allowShell'),
             allowTools: form.has('allowTools'),
             allowFs: form.has('allowFs'),
@@ -1601,12 +1605,16 @@ async function onSessionEvent(rt, chat, event) {
       return
     }
     case 'tool/result': {
-      // 只有失败才值得占用一条消息；成功静默回流到最终回答里。
+      // 工具失败默认不上屏：ToolNotFoundError / WebError 这类是 agent 自己会重试或绕过的
+      // 中间态，推到手机上只是噪音。要排查时在配置页打开 notifyToolFailures。
       const error = event.data?.error
-      if (error && typeof error === 'object') {
-        const line = [error.name ?? 'error', error.reason ?? ''].filter(Boolean).join(' ')
-        await sendText(rt, chat.id, `⚠️ ${t(rt, 'tool.failed', { detail: clip(line, 200) })}`)
+      if (!error || typeof error !== 'object') return
+      const line = [error.name ?? 'error', error.reason ?? error.message ?? ''].filter(Boolean).join(' ')
+      if (rt.cfg.notifyToolFailures !== true) {
+        rt.logger.info(`telegram-control: 工具失败（未推送）：${clip(line, 200)}`)
+        return
       }
+      await sendText(rt, chat.id, `⚠️ ${t(rt, 'tool.failed', { detail: clip(line, 200) })}`)
       return
     }
     case 'turn/end': {
@@ -3195,6 +3203,7 @@ async function ensureTemplateConfig(configPath, staticConfig) {
       lang: 'zh',
       thinkingStatus: 'typing',
       format: 'markdown',
+      notifyToolFailures: false,
       answerApprovals: false,
       answerQuestions: false,
     })

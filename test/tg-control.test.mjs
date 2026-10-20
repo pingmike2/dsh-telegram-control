@@ -557,7 +557,10 @@ try {
   }
 
   emitSession(firstSession.sessionId, 'tool/result', { name: 'shell', error: { name: 'TimeoutError', reason: 'took too long' } })
-  await waitFor(() => hasText(CHAT_ID, (text) => text.includes('工具失败') && text.includes('took too long')), '工具失败仍然提示')
+  emitSession(firstSession.sessionId, 'tool/result', { name: 'web_search', error: { name: 'WebError' } })
+  await sleep(600)
+  ok(!hasText(CHAT_ID, (text) => text.includes('工具失败')), '工具失败默认不上屏', JSON.stringify(textsOf().slice(-3)))
+  ok(!hasText(CHAT_ID, (text) => text.includes('ToolNotFoundError')), 'ToolNotFoundError 一类噪音不上屏')
 
   emitSession(firstSession.sessionId, 'turn/end', { reason: { kind: 'completed' } })
   await waitFor(() => hasText(CHAT_ID, (text) => text === '✅ 本轮完成'), '回合结束提示')
@@ -867,6 +870,7 @@ try {
       allowPower: '1',
       thinkingStatus: 'typing',
       format: 'markdown',
+      notifyToolFailures: '1',
       powerExec: fixture,
       powerDefaultSeconds: '60',
       configPort: String(configPort),
@@ -879,6 +883,7 @@ try {
     ok(saved?.notifyToolCalls === undefined, '工具调用推送开关已移除', JSON.stringify(saved?.notifyToolCalls))
     ok(Array.isArray(saved?.allowedUserIds) && saved.allowedUserIds.includes(USER_ID), '保存后授权列表正确', JSON.stringify(saved?.allowedUserIds))
     ok(saved?.format === 'markdown', '保存后消息格式为 markdown', JSON.stringify(saved?.format))
+    ok(saved?.notifyToolFailures === true, '保存后工具失败通知开关生效', JSON.stringify(saved?.notifyToolFailures))
   }
 
   const statusJson = await (await fetch(`${configUrl}/status`)).text()
@@ -944,6 +949,14 @@ try {
   emitSession(mdSession.sessionId, 'assistant/message', { message: { content: [{ type: 'text', text: '**兜底** 1.2.0' }] } })
   await waitFor(() => hasText(CHAT_ID, (text) => text === '**兜底** 1.2.0'), 'MarkdownV2 解析失败自动退回纯文本', 6000)
   api.rejectMarkdown = false
+
+  // 打开开关后，工具失败才重新上屏
+  emitSession(mdSession.sessionId, 'tool/result', { name: 'shell', error: { name: 'TimeoutError', reason: 'took too long' } })
+  await waitFor(
+    () => hasText(CHAT_ID, (text) => text.includes('工具失败') && text.includes('took too long')),
+    '打开 notifyToolFailures 后工具失败才推送',
+    6000,
+  )
 
   // ───────────────────────── 热加载与卸载 ─────────────────────────
 

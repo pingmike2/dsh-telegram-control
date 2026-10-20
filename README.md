@@ -40,7 +40,8 @@ plugin_manager install_bundle  target = <本目录绝对路径>
   "answerQuestions": false,
   "forwardReasoning": false,
   "thinkingStatus": "typing",
-  "format": "markdown"
+  "format": "markdown",
+  "notifyToolFailures": false
 }
 ```
 
@@ -63,7 +64,7 @@ plugin_manager install_bundle  target = <本目录绝对路径>
 1. 给聊天发一个 `sendChatAction: typing` —— 手机上就是「对方正在输入…」，节流 4 秒一次，不会刷屏。
 2. 最终 `assistant/message` 的 `text` 块才是回答，正常发出来。
 
-**工具调用同样不上屏**：`tool/call`（`🔧 edit`、`🔧 pwsh` 那种）只用来刷新「正在输入…」状态，一条消息都不发；`tool/result` 只在**失败**时发一行 `⚠️ 工具失败：…`。所以手机上看到的永远是：状态在动 → 最终回答。
+**工具调用同样不上屏**：`tool/call`（`🔧 edit`、`🔧 pwsh` 那种）只用来刷新「正在输入…」状态，一条消息都不发；`tool/result` 的**失败默认也不推**——`ToolNotFoundError`、`WebError` 这类是 agent 自己会重试或绕过的中间态，推到手机上纯噪音，只写进日志。要排查时把 `notifyToolFailures` 打开，才会收到一行 `⚠️ 工具失败：…`。所以手机上看到的永远是：状态在动 → 最终回答。
 
 消息按 Markdown 渲染：回答里的标题会变粗体、代码块进等宽块、`*` `_` `.` 这类保留字符自动转义，不再原样显示源码。表格没有 MarkdownV2 语法，等宽块在手机上换行还会错位，所以**翻成键值行**：两列变 `• 项目：结果`，多列变 `• 表头：值 · 表头：值`。哪条消息 Telegram 解析不了，就自动退回纯文本重发一次。
 
@@ -72,6 +73,7 @@ plugin_manager install_bundle  target = <本目录绝对路径>
 | `forwardReasoning` | `false` | `/reasoning on` 后把思考内容也发出来（带 `🧠 思考` 前缀），排查问题时用 |
 | `thinkingStatus` | `typing` | `typing`（只发状态）/ `message` / `off`（完全不发） |
 | `format` | `markdown` | 消息发送格式：`markdown` 渲染标题/表格/代码块并自动转义保留字符（表格翻成键值行）；`plain` 原样输出。解析失败自动退回纯文本，不丢消息 |
+| `notifyToolFailures` | `false` | 工具失败是否推到 Telegram。默认关：`ToolNotFoundError` / `WebError` 这类噪音只写日志，排查问题时才打开 |
 
 ## 网络与代理
 
@@ -173,7 +175,7 @@ npm test          # 等价于 node test/tg-control.test.mjs
 
 本地起一个假的 Bot API（真 http server，走 `getUpdates` 长轮询）+ 假的 Cordis ctx / `sessionController` / `tools` / `pluginManager`，真跑插件：命令菜单注册、鉴权、命令分发、prompt 桥接、流式事件回流、**思考过程不上屏与 typing 节流**、语言切换、shell / 文件 / 工具直调、审批与提问内联按钮、会话命名与切换、电源控制（含二次确认与 `allowPower` 关闭）、配置页 CSRF 与保存、Markdown 渲染与纯文本兜底、热加载、卸载清理。
 
-当前：**132 项断言全部通过**。测试用 `powerExec` 指向 `test/fixtures/fake-shutdown.mjs`，**绝不会真的关机**。
+当前：**138 项断言全部通过**。测试用 `powerExec` 指向 `test/fixtures/fake-shutdown.mjs`，**绝不会真的关机**。
 
 ## 设计取舍
 

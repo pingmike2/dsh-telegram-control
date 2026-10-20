@@ -40,7 +40,8 @@ Fill in `botToken`, `allowedUserIds` / `allowedChatIds`, proxy and toggles (incl
   "answerQuestions": false,
   "forwardReasoning": false,
   "thinkingStatus": "typing",
-  "format": "markdown"
+  "format": "markdown",
+  "notifyToolFailures": false
 }
 ```
 
@@ -63,7 +64,7 @@ While the model reasons it emits a flood of `reasoning` deltas. Those **never re
 1. Sends `sendChatAction: typing` — the familiar “typing…” indicator, throttled to once every 4 seconds so it never floods.
 2. Sends the `text` block of the final `assistant/message` as the answer.
 
-**Tool calls stay off screen as well**: `tool/call` (the `🔧 edit` / `🔧 pwsh` kind) only refreshes the typing indicator and sends no message at all; `tool/result` only reports **failures** as a single `⚠️ Tool failed: …` line. On your phone you therefore always see: status moving → final answer.
+**Tool calls stay off screen as well**: `tool/call` (the `🔧 edit` / `🔧 pwsh` kind) only refreshes the typing indicator and sends no message at all; `tool/result` **failures are not forwarded by default** either — `ToolNotFoundError` / `WebError` and friends are intermediate states the agent retries or works around, so they go to the log instead of your phone. Turn on `notifyToolFailures` when you are debugging and you get a single `⚠️ Tool failed: …` line. On your phone you therefore always see: status moving → final answer.
 
 Replies are rendered as Markdown: headings become bold, fenced code lands in monospace blocks, and reserved characters such as `*` `_` `.` are escaped instead of leaking into the chat as raw source. Tables have no MarkdownV2 syntax and monospace blocks wrap badly on a phone, so they are **turned into key/value lines**: two columns become `• label: value`, wider tables become `• header: value · header: value`. If Telegram ever rejects a message, it is resent as plain text.
 
@@ -72,6 +73,7 @@ Replies are rendered as Markdown: headings become bold, fenced code lands in mon
 | `forwardReasoning` | `false` | After `/reasoning on`, reasoning is also forwarded (prefixed with `🧠 Thinking`) — useful when debugging |
 | `thinkingStatus` | `typing` | `typing` (status only) / `message` / `off` (nothing at all) |
 | `format` | `markdown` | Outbound format: `markdown` renders headings / tables / code blocks and escapes reserved characters (tables become key/value lines); `plain` sends the source verbatim. Unparseable messages are resent as plain text, never dropped |
+| `notifyToolFailures` | `false` | Whether tool failures reach Telegram. Off by default: `ToolNotFoundError` / `WebError` noise stays in the log; turn it on while debugging |
 
 ## Networking and proxy
 
@@ -173,7 +175,7 @@ npm test          # same as node test/tg-control.test.mjs
 
 A fake Bot API (a real http server speaking `getUpdates` long-polling) plus fake Cordis ctx / `sessionController` / `tools` / `pluginManager` run the real plugin end to end: command-menu registration, auth, command dispatch, prompt bridging, streaming event relay, **reasoning kept off screen with typing throttling**, language switching, shell / file / direct tool calls, approval and question inline buttons, session naming and switching, power control (including the confirmation flow and `allowPower` off), config-page CSRF and saving, Markdown rendering with the plain-text fallback, hot reload, and uninstall cleanup.
 
-Currently **all 132 assertions pass**. The suite points `powerExec` at `test/fixtures/fake-shutdown.mjs`, so **it can never really power off the machine**.
+Currently **all 138 assertions pass**. The suite points `powerExec` at `test/fixtures/fake-shutdown.mjs`, so **it can never really power off the machine**.
 
 ## Design trade-offs
 
