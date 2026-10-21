@@ -325,7 +325,7 @@ npm test          # same as node test/tg-control.test.mjs
 
 A fake Bot API (a real http server speaking `getUpdates` long-polling) plus fake Cordis ctx / `sessionController` / `tools` / `pluginManager` run the real plugin end to end: command-menu registration, auth, command dispatch, prompt bridging, streaming event relay, **reasoning kept off screen with a continuous typing heartbeat**, language switching, shell / file / direct tool calls, approval and question inline buttons, session naming and switching, power control (including the confirmation flow and `allowPower` off), config-page CSRF and saving, Markdown rendering with the plain-text fallback, hot reload, and uninstall cleanup.
 
-Currently **all 202 assertions pass**. The suite points `powerExec` at `test/fixtures/fake-shutdown.mjs`, so **it can never really power off the machine**.
+Currently **all 203 assertions pass**. The suite points `powerExec` at `test/fixtures/fake-shutdown.mjs`, so **it can never really power off the machine**.
 
 ## Versioning convention
 

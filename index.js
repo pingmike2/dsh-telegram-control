@@ -2622,13 +2622,12 @@ async function runCommand(rt, chat, command, args) {
       }
       rt.cfg.lang = value
       await persistConfigPatch(rt, { lang: value })
-      // 菜单注册要走 Bot API，任何异常都不能连累下面那句确认——
-      // 否则用户发了 /lang，语言其实已经切好了，手机上却一条回复都收不到。
-      try {
-        await registerBotCommands(rt, true)
-      } catch (error) {
+      // 命令菜单要打 6 次串行 Bot API（3 个 scope + 菜单按钮 + 短描述 + 描述），
+      // 中继一慢这里能卡十几秒，用户看到的就是「发了 /lang 毫无反应」。
+      // 注册放后台跑，确认回复立刻发。
+      void registerBotCommands(rt, true).catch((error) => {
         rt.logger.warn(`telegram-control: 重注册命令菜单失败 ${error?.message || error}`)
-      }
+      })
       await sendText(rt, chat.id, t(rt, 'lang.set', { lang: value }))
       return
     }

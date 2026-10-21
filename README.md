@@ -318,7 +318,7 @@ npm test          # 等价于 node test/tg-control.test.mjs
 
 本地起一个假的 Bot API（真 http server，走 `getUpdates` 长轮询）+ 假的 Cordis ctx / `sessionController` / `tools` / `pluginManager`，真跑插件：命令菜单注册、鉴权、命令分发、prompt 桥接、流式事件回流、**思考过程不上屏与 typing 节流**、语言切换、shell / 文件 / 工具直调、审批与提问内联按钮、会话命名与切换、电源控制（含二次确认与 `allowPower` 关闭）、配置页 CSRF 与保存、Markdown 渲染与纯文本兜底、热加载、卸载清理。
 
-当前：**202 项断言全部通过**。测试用 `powerExec` 指向 `test/fixtures/fake-shutdown.mjs`，**绝不会真的关机**。
+当前：**203 项断言全部通过**。测试用 `powerExec` 指向 `test/fixtures/fake-shutdown.mjs`，**绝不会真的关机**。
 
 ## 版本号约定
 

@@ -1114,9 +1114,18 @@ try {
   pushText('/lang en')
   await waitFor(() => hasText(CHAT_ID, (text) => text.includes('Language set to en')), '/lang en 切换语言')
   {
+    // 菜单注册是后台任务（不挡 /lang 的确认回复），所以这里等它落地
+    await waitFor(
+      () =>
+        callsOf('setMyCommands')
+          .at(-1)
+          ?.body?.commands?.find((item) => item.command === 'power')?.description === 'Host and power status',
+      '菜单描述切到英文',
+      20_000,
+    )
     const last = callsOf('setMyCommands').at(-1)
     const power = last?.body.commands?.find((item) => item.command === 'power')
-    ok(power?.description === 'Host and power status', '菜单描述切到英文', JSON.stringify(power))
+    ok(power?.description === 'Host and power status', '菜单描述切到英文（粗查）', JSON.stringify(power))
   }
   pushText('/help')
   await waitFor(() => hasText(CHAT_ID, (text) => text.includes('DSH Telegram Console')), '/help 输出英文帮助')
