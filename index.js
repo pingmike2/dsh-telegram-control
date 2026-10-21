@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url'
 /** Cordis 插件名（出现在 Loader 诊断里）。 */
 export const name = 'telegram-control'
 /** 插件版本。 */
-export const version = '1.4.1.1'
+export const version = '1.4.1.3'
 
 /** 所有能力都在调用时按需通过 `ctx.get()` 解析，因此不声明硬依赖。 */
 export const inject = []
@@ -1757,9 +1757,12 @@ async function pulseThinking(rt, chatId, force = false) {
  * 免得两个会话的回答混在一起分不清。
  */
 function sessionTag(chat, state) {
-  if (chat.watchers.size <= 1 || !state) return ''
-  const label = state.title || shortId(state.sessionId)
-  return `🏷 ${label}`
+  if (!state) return ''
+  const isPrimary = Boolean(chat.sessionId) && chat.sessionId === state.sessionId
+  // 订阅（/watch）来的会话必须带标题——哪怕只订阅了一个，
+  // 否则用户根本分不清这条是主会话说的还是订阅的那个会话说的。
+  if (isPrimary && chat.watchers.size <= 1) return ''
+  return `🏷 ${state.title || state.sessionId}`
 }
 
 async function onSessionEvent(rt, chat, event, state) {
@@ -1916,12 +1919,37 @@ async function promptSession(rt, chat, text) {
 
 // ────────────────────────────── 审批 / 提问接管 ──────────────────────────────
 
-function chatIdForSession(rt, sessionId) {
+/**
+ * 会话 → 聊天：主会话和 /watch 订阅的会话都算。
+ * 之前这里只比 chat.sessionId，导致订阅来的会话发生审批/提问/错误时
+ * chatIdForSession 返回 undefined，通知被静默丢掉、直接落到宿主端。
+ */
+function chatForSession(rt, sessionId) {
   if (!sessionId) return undefined
-  for (const [id, chat] of rt.chats) {
-    if (chat.sessionId === sessionId) return id
+  for (const [chatId, chat] of rt.chats) {
+    if (chat.sessionId === sessionId) return { chatId, chat }
+    if (chat.watchers?.has?.(sessionId)) return { chatId, chat }
   }
   return undefined
+}
+
+function chatIdForSession(rt, sessionId) {
+  return chatForSession(rt, sessionId)?.chatId
+}
+
+/**
+ * 通知前缀：订阅来的会话一律带标题（否则不知道是哪个会话在说话），
+ * 主会话只在同时盯了多个时才带，避免单会话时每句都挂前缀。
+ */
+async function sessionNoticeTag(rt, chatId, sessionId) {
+  if (!sessionId) return ''
+  const chat = rt.chats.get(chatId)
+  if (!chat) return ''
+  const isPrimary = chat.sessionId === sessionId
+  const watching = chat.watchers?.size ?? 0
+  if (isPrimary && watching <= 1) return ''
+  const title = (await sessionTitleOf(rt, sessionId)) || sessionId
+  return `🏷 ${title}`
 }
 
 function nextToken(rt) {
@@ -1951,16 +1979,17 @@ function approvalReason(request) {
   return ''
 }
 
-function askApproval(rt, chatId, request) {
+async function askApproval(rt, chatId, request) {
   const token = nextToken(rt)
   const reason = approvalReason(request)
+  const tag = await sessionNoticeTag(rt, chatId, request?.agent?.id)
   const header = [
     '🔐 工具执行审批',
-    `会话：${shortId(request?.agent?.id)}`,
+    `会话：${(await sessionTitleOf(rt, request?.agent?.id)) || request?.agent?.id || '未知'}`,
     `工具：${request?.toolName ?? '未知'}`,
   ]
   if (reason.length > 0) header.push(`原因：${reason}`)
-  const text = `${header.join('\n')}\n\n允许一次 / 拒绝？`
+  const text = `${tag ? `${tag}\n` : ''}${header.join('\n')}\n\n允许一次 / 拒绝？`
 
   return new Promise((resolvePromise) => {
     let settled = false
@@ -2034,14 +2063,16 @@ async function questionBridge(rt, request, next) {
   }
 }
 
-function askQuestion(rt, chatId, item, request) {
+async function askQuestion(rt, chatId, item, request) {
   const token = nextToken(rt)
   const options = Array.isArray(item?.options) ? item.options.slice(0, 8) : []
+  const tag = await sessionNoticeTag(rt, chatId, request?.agent?.id)
   const header = ['❓ Agent 需要你确认']
   if (item?.header) header.push(`【${item.header}】`)
   header.push(String(item?.question ?? ''))
   if (item?.detail) header.push(String(item.detail))
-  const text = header.filter((line) => typeof line === 'string' && line.length > 0).join('\n')
+  const body = header.filter((line) => typeof line === 'string' && line.length > 0).join('\n')
+  const text = tag ? `${tag}\n${body}` : body
 
   return new Promise((resolvePromise) => {
     let settled = false
@@ -2939,7 +2970,7 @@ async function statusText(rt, chat) {
     }
   }
   const session = chat.sessionId
-    ? `${(await sessionTitleOf(rt, chat.sessionId)) || t(rt, 'status.untitled')} · ${shortId(chat.sessionId)}`
+    ? `${(await sessionTitleOf(rt, chat.sessionId)) || t(rt, 'status.untitled')} · ${chat.sessionId}`
     : t(rt, 'status.unbound')
   const watching =
     chat.watchers.size > 1 ? t(rt, 'status.watching', { count: chat.watchers.size }) : ''
@@ -3750,13 +3781,15 @@ export function apply(ctx, config) {
 
     const offError =
       typeof ctx.on === 'function'
-        ? ctx.on('agent/error', (payload) => {
+        ? ctx.on('agent/error', async (payload) => {
             const rt = holder.rt
             if (!rt) return
-            const chatId = chatIdForSession(rt, payload?.agent?.id)
-            if (chatId === undefined) return
+            const sessionId = payload?.agent?.id
+            const target = chatForSession(rt, sessionId)
+            if (!target) return
             const message = payload?.error?.message ?? String(payload?.error ?? '未知错误')
-            void sendText(rt, chatId, `❌ Agent 错误：${clip(message, 800)}`)
+            const tag = await sessionNoticeTag(rt, target.chatId, sessionId)
+            void sendText(rt, target.chatId, `${tag ? `${tag}\n` : ''}❌ Agent 错误：${clip(message, 800)}`)
           })
         : undefined
 

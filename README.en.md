@@ -169,7 +169,7 @@ Every supervision tick rewrites `%DSH_HOME%\telegram-control-status.json`:
 
 ```json
 {
-  "version": "1.4.1.1",
+  "version": "1.4.1.3",
   "state": "running",
   "pid": 3900,
   "startedAt": 1792418496591,
@@ -203,7 +203,7 @@ Every supervision tick rewrites `%DSH_HOME%\telegram-control-status.json`:
 - **Name it while creating it**: `/new Refactor login page` → the session is created and `rename` is called immediately, so the title lands in the session projection. Add a directory with `|`: `/new F:\work\app | Refactor login page`. Without `|`, the argument is classified by content — contains a path separator or points at an existing directory → directory, otherwise → title.
 - **Switch by title**: `/use Refactor login page` (exact, case-insensitive), `/use login` (fuzzy match when unambiguous), `/use 3` `/use #3` (index from `/sessions`), `/use 9f3a12` (sessionId prefix).
 - **Switch by button**: `/sessions` attaches up to 12 inline buttons (`s:<index>`); one tap binds the session and replies “bound session: title”.
-- **Copy a session ID**: in `/sessions`, each entry is one line of “index + marks + title” followed by the **full sessionId on its own line** (`session-133df74f-…`, no spaces) — long-press that line to copy the whole thing into `/use`, `/watch`, or the Web UI.
+- **Copy a session ID**: in `/sessions`, each entry is one line of “index + marks + title” followed by the **full sessionId on its own line** (`session-133df74f-…`, no spaces) — long-press that line to copy the whole thing into `/use`, `/watch`, or the Web UI. `/info` and `/status` print the same **untruncated** id.
 
 ### Watching several sessions at once
 
@@ -212,12 +212,14 @@ One chat can **watch several sessions simultaneously** (up to 5); all their outp
 | Command | Effect |
 |---|---|
 | `/use <index\|id\|title>` | Switches the **primary** session — prompts, `/cancel`, `/fork`, `/rename` target it; already-watched sessions stay subscribed |
-| `/watch <index\|id\|title>` | Subscribes one more session (read-only); pushed messages carry a `🏷 title` prefix so they never blur together |
+| `/watch <index\|id\|title>` | Subscribes one more session (read-only); pushed messages carry a `🏷 title` prefix so they never blur together — **watched sessions always carry the title**, even if only one is watched |
 | `/watch` | Lists subscriptions: `📌` primary, `👁` watched, `▶️` currently working |
 | `/unwatch <index\|id\|title>` | Drops one; if it was the primary, the first remaining session takes over automatically |
 | `/unwatch all` | Drops everything (back to strict one-to-one mode) |
 
 - Only the **primary** session receives prompts; watched sessions are output-only. When two run at once, the “typing…” heartbeat stays on as long as at least one is working.
+- **Notifications carry the title**: answers, forwarded reasoning, turn end, tool failures, `Agent error`, tool approvals and question prompts from a watched session all start with `🏷 title` (falling back to the full sessionId when untitled); the primary session only adds it when several sessions are watched, so single-session chats stay clean.
+- **Approvals, questions and errors from watched sessions reach Telegram too**: previously only events of the primary session could be mapped back to a chat, so a watched session's approval request was silently dropped.
 - Subscriptions persist in the state file (a `watched` array), so they survive plugin reloads and DSH restarts — remote monitoring does not drop on a hot reload.
 - In `/sessions`, `📌` marks the primary and `👁` marks watched sessions.
 - **See the title**: `/info` shows the bound session's title/ID/cwd/state/event count, and `/status` includes “bound session: title · id”.
@@ -320,7 +322,7 @@ npm test          # same as node test/tg-control.test.mjs
 
 A fake Bot API (a real http server speaking `getUpdates` long-polling) plus fake Cordis ctx / `sessionController` / `tools` / `pluginManager` run the real plugin end to end: command-menu registration, auth, command dispatch, prompt bridging, streaming event relay, **reasoning kept off screen with a continuous typing heartbeat**, language switching, shell / file / direct tool calls, approval and question inline buttons, session naming and switching, power control (including the confirmation flow and `allowPower` off), config-page CSRF and saving, Markdown rendering with the plain-text fallback, hot reload, and uninstall cleanup.
 
-Currently **all 172 assertions pass**. The suite points `powerExec` at `test/fixtures/fake-shutdown.mjs`, so **it can never really power off the machine**.
+Currently **all 195 assertions pass**. The suite points `powerExec` at `test/fixtures/fake-shutdown.mjs`, so **it can never really power off the machine**.
 
 ## Versioning convention
 

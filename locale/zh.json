@@ -57,6 +57,7 @@
   "status.diagnostics": "轮询：{polls} 次 · 失败 {pollErrors}（超时 {timeouts}）· 打字：ok {typingOk} / fail {typingFail}",
   "status.lastPollError": "\n最近错误（{at}）：{error}",
   "status.unbound": "未绑定",
+  "status.watching": "（同时关注 {count} 个会话）",
   "status.untitled": "（未命名）",
   "status.unknownBot": "未确认",
   "status.direct": "直连",

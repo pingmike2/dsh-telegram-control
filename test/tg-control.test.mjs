@@ -31,7 +31,22 @@ function ok(condition, label, detail) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-async function waitFor(predicate, label, timeoutMs = 15_000) {
+/** 落盘的 watched 是 [{ sessionId, title }]，断言时先映射成 ID 数组 */
+function watchedIdsFrom(state) {
+  const watched = state?.chats?.['1001']?.watched ?? []
+  return watched.map((entry) => (typeof entry === 'string' ? entry : entry?.sessionId)).filter(Boolean)
+}
+
+/**
+ * 第三个参数必须是数字（超时毫秒）。传成字符串会把 deadline 算成字符串拼接，
+ * `Date.now() >= deadline` 恒为 false，循环永不超时、整个测试挂死——
+ * 这里兜底：非数字一律当失败详情处理。
+ */
+async function waitFor(predicate, label, timeoutMs = 20_000, detail) {
+  if (typeof timeoutMs !== 'number' || !Number.isFinite(timeoutMs)) {
+    detail = timeoutMs
+    timeoutMs = 20_000
+  }
   const deadline = Date.now() + timeoutMs
   for (;;) {
     let value = false
@@ -49,7 +64,9 @@ async function waitFor(predicate, label, timeoutMs = 15_000) {
     await sleep(40)
   }
   failed.push(label)
-  console.log(`  ❌ ${label}（超时 ${timeoutMs}ms）`)
+  let hint = detail
+  if (typeof hint === 'function') hint = hint()
+  console.log(`  ❌ ${label}（超时 ${timeoutMs}ms）${hint ? `\n      ${hint}` : ''}`)
   return false
 }
 
@@ -148,6 +165,40 @@ const server = createServer((req, res) => {
 
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
 const apiBaseUrl = `http://127.0.0.1:${server.address().port}`
+
+// ───────────────────── 语言包完整性（静态检查） ─────────────────────
+// 线上出现过 {watching} 位置直接打印出 `status.watching` 的事故：代码引用了 key，
+// 语言包里没有，t() 就把 key 原样吐给用户。这里静态比对，堵住这一类问题。
+section('语言包完整性')
+{
+  const here = dirname(fileURLToPath(import.meta.url))
+  const root = dirname(here)
+  const code = await readFile(join(root, 'index.js'), 'utf8')
+  const zh = JSON.parse(await readFile(join(root, 'locale', 'zh.json'), 'utf8'))
+  const en = JSON.parse(await readFile(join(root, 'locale', 'en.json'), 'utf8'))
+
+  const used = new Set()
+  for (const m of code.matchAll(/\bt\(\s*rt\s*,\s*'([^']+)'/g)) used.add(m[1])
+  for (const m of code.matchAll(/\bt\(\s*rt\s*,\s*`([^`$]+)`/g)) used.add(m[1])
+
+  const missingZh = [...used].filter((key) => !(key in zh)).sort()
+  const missingEn = [...used].filter((key) => !(key in en)).sort()
+  ok(used.size > 50, '静态扫描到足够多的 t() 调用', `只扫到 ${used.size} 个，正则可能失配`)
+  ok(missingZh.length === 0, '代码引用的 key 在 zh 语言包里都存在', missingZh.join(', '))
+  ok(missingEn.length === 0, '代码引用的 key 在 en 语言包里都存在', missingEn.join(', '))
+
+  const zhKeys = Object.keys(zh).sort()
+  const enKeys = Object.keys(en).sort()
+  const onlyZh = zhKeys.filter((key) => !(key in en))
+  const onlyEn = enKeys.filter((key) => !(key in zh))
+  ok(onlyZh.length === 0 && onlyEn.length === 0, 'zh/en 键集合完全对齐', `${onlyZh.join(',')} | ${onlyEn.join(',')}`)
+
+  ok('status.watching' in zh && 'status.watching' in en, 'status.watching 已补齐（多会话关注提示不再漏 key）')
+  ok(
+    String(zh['status.watching']).includes('{count}') && String(en['status.watching']).includes('{count}'),
+    'status.watching 带 {count} 占位符',
+  )
+}
 
 // ───────────────────────── 假 DSH 环境 ─────────────────────────
 
@@ -271,10 +322,10 @@ const sessions = new Map()
 const createdOrder = []
 let sessionSeq = 0
 
-function createSession({ cwd = workDir, title = '' } = {}) {
+function createSession({ cwd = workDir, title = '', sessionId = '' } = {}) {
   sessionSeq += 1
   const session = {
-    sessionId: `session-${sessionSeq}`,
+    sessionId: sessionId || `session-${sessionSeq}`,
     title,
     cwd,
     running: false,
@@ -328,7 +379,9 @@ const questionHandler = () => handlers.get('user-questions/request')?.[0]
 const services = {
   sessionController: {
     async create(request) {
-      const session = createSession({ cwd: request?.cwd ?? workDir })
+      const wanted = api.nextSessionId
+      api.nextSessionId = ''
+      const session = createSession({ cwd: request?.cwd ?? workDir, sessionId: wanted })
       return { sessionId: session.sessionId }
     },
     // Host 的真实签名是 prompt(request, signal)，缺 signal 会抛
@@ -670,6 +723,9 @@ try {
   const titledSession = createdOrder.map((id) => sessions.get(id)).find((session) => session.title === '我的前端项目')
   ok(Boolean(titledSession), '标题已通过 rename 落库', JSON.stringify([...sessions.values()].map((s) => s.title)))
 
+  // 真实宿主给的是 UUID 全串；这里用同形态的长 ID，才能验证 /status 不把它截断成 `session-133d…`
+  const longSessionId = 'session-133df74f-e7cc-4461-a6f6-d7edb66bd082'
+  api.nextSessionId = longSessionId
   pushText(`/new ${backendDir} | 后端重构`)
   await waitFor(() => hasText(CHAT_ID, (text) => text.includes('标题：后端重构')), '/new 目录 | 标题 命名')
   ok(
@@ -716,6 +772,15 @@ try {
   await waitFor(() => hasText(CHAT_ID, (text) => text.startsWith('🔗 已绑定会话：后端重构')), '/use 切回后端重构')
   pushText('/status')
   await waitFor(() => hasText(CHAT_ID, (text) => text.includes('当前会话：后端重构')), '/status 显示当前会话标题')
+  {
+    // 会话 ID 必须完整可复制，不能是 `session-133d…` 这种截断形式
+    const longLine = textsOf()
+      .flatMap((text) => text.split('\n'))
+      .find((line) => line.includes('当前会话：后端重构'))
+    ok(Boolean(longLine), '/status 渲染了当前会话行', JSON.stringify(longLine))
+    ok(longLine?.includes(longSessionId) === true, '/status 里的会话 ID 完整不截断', JSON.stringify(longLine))
+    ok(longLine?.includes('…') === false, '/status 会话行没有省略号', JSON.stringify(longLine))
+  }
 
   {
     const sButton = buttons().find((button) => String(button.callback_data).startsWith('s:'))
@@ -803,6 +868,59 @@ try {
     await waitFor(() => hasText(CHAT_ID, (text) => text.includes('自动重订阅后的回答')), '发消息后主会话自动重新订阅')
   }
 
+  // ─────────────────── 订阅会话的通知必须带标题 ───────────────────
+
+  section('订阅会话的通知带标题')
+  {
+    // 订阅一个「非主会话」，再把主会话从订阅里摘掉 → watchers 只剩 1 个且不是主会话。
+    // 旧逻辑 `watchers.size <= 1 就不打标签` 在这里会漏标题，新逻辑必须带上。
+    pushText('/unwatch all')
+    await waitFor(async () => {
+      const state = await readJson(statePath)
+      return (state?.chats?.[String(CHAT_ID)]?.watched ?? []).length === 0
+    }, '清空订阅（为单订阅场景做准备）', 8000)
+    pushText(`/watch ${firstSession.sessionId}`)
+    await waitFor(async () => watchedIdsFrom(await readJson(statePath)).includes(firstSession.sessionId), '订阅列表包含旁路会话', 8000)
+    pushText(`/unwatch ${boundSessionId}`)
+    await waitFor(async () => {
+      const ids = watchedIdsFrom(await readJson(statePath))
+      return ids.length === 1 && ids[0] === firstSession.sessionId
+    }, '订阅列表只剩旁路会话（watchers=1 且非主会话）', 8000)
+
+    emitSession(firstSession.sessionId, 'assistant/message', {
+      message: { content: [{ type: 'text', text: '单订阅会话的回答' }] },
+    })
+    await waitFor(
+      () => hasText(CHAT_ID, (text) => text.startsWith('🏷 ') && text.includes('单订阅会话的回答')),
+      '只订阅一个会话时输出仍带标题',
+      JSON.stringify(textsOf().slice(-3)),
+    )
+    ok(
+      hasText(
+        CHAT_ID,
+        (text) => text.startsWith('🏷 ') && (text.includes('我的前端项目') || text.includes(firstSession.sessionId)),
+      ),
+      '标题回退到完整 sessionId 时不截断',
+      JSON.stringify(textsOf().slice(-2)),
+    )
+
+    // 订阅会话报错：以前 chatIdForSession 只认主会话，这条通知会被直接丢掉
+    const errorHandler = handlers.get('agent/error')?.[0]
+    ok(typeof errorHandler === 'function', 'agent/error 已挂载')
+    await errorHandler?.({ agent: { id: firstSession.sessionId }, error: { message: '订阅会话炸了' } })
+    await waitFor(
+      () => hasText(CHAT_ID, (text) => text.startsWith('🏷 ') && text.includes('订阅会话炸了')),
+      '订阅会话的 Agent 错误能路由到 Telegram 并带标题',
+      JSON.stringify(textsOf().slice(-3)),
+    )
+
+    pushText('/unwatch all')
+    await waitFor(async () => {
+      const state = await readJson(statePath)
+      return (state?.chats?.[String(CHAT_ID)]?.watched ?? []).length === 0
+    }, '收尾清空订阅', 8000)
+  }
+
   // ───────────────────────── 审批接管 ─────────────────────────
 
   section('审批接管')
@@ -838,6 +956,55 @@ try {
     ok(decision === 'allowed-once', '点允许 → allowed-once', String(decision))
     await waitFor(() => hasAnyText(CHAT_ID, (text) => text.includes('已允许一次')), '允许结果回执')
   }
+
+  {
+    // 订阅会话的审批：以前 chatIdForSession 只认主会话，这类审批根本推不到手机上
+    pushText(`/watch ${firstSession.sessionId}`)
+    // 不能只等文字：历史消息里早有「👁 已订阅」，会假阳性通过。必须等落库。
+    await waitFor(async () => watchedIdsFrom(await readJson(statePath)).includes(firstSession.sessionId), '审批用例订阅旁路会话', 8000)
+
+    const handler = approvalHandler()
+    let decision
+    const pending = (async () => {
+      decision = await handler(
+        {
+          agent: { id: firstSession.sessionId },
+          toolName: 'shell',
+          displayReason: { zh: '订阅会话要跑命令', en: 'watched session wants a command' },
+          signal: new AbortController().signal,
+        },
+        async () => 'delegate',
+      )
+    })()
+    await waitFor(
+      () =>
+        hasText(CHAT_ID, (text) => text.includes('🔐 工具执行审批') && text.startsWith('🏷 ')),
+      '订阅会话的审批带标题推到 Telegram',
+      JSON.stringify(textsOf().slice(-3)),
+    )
+    ok(
+      hasText(
+        CHAT_ID,
+        (text) =>
+          text.includes('🔐 工具执行审批') &&
+          text.includes('会话：') &&
+          (text.includes(firstSession.sessionId) || text.includes('我的前端项目')),
+      ),
+      '审批里的会话行显示标题或完整 sessionId（不是截断串）',
+      JSON.stringify(textsOf().filter((text) => text.includes('🔐 工具执行审批')).slice(-2)),
+    )
+    const denyButton = [...buttons()]
+      .reverse()
+      .find((button) => String(button.callback_data).startsWith('a:') && String(button.callback_data).endsWith(':0'))
+    ok(Boolean(denyButton?.callback_data), '订阅审批有拒绝按钮', JSON.stringify([...buttons()].slice(-4)))
+    pushCallback(String(denyButton.callback_data))
+    await pending
+    ok(decision === 'rejected', '订阅会话的拒绝生效', String(decision))
+    pushText('/unwatch all')
+    await waitFor(async () => {
+      const state = await readJson(statePath)
+      return (state?.chats?.[String(CHAT_ID)]?.watched ?? []).length === 0
+    }, '审批用例收尾清空订阅', 8000)  }
 
   // ───────────────────────── 提问接管 ─────────────────────────
 

@@ -57,6 +57,7 @@
   "status.diagnostics": "Polling: {polls} calls · {pollErrors} failures ({timeouts} timeouts) · typing: ok {typingOk} / fail {typingFail}",
   "status.lastPollError": "\nLast error ({at}): {error}",
   "status.unbound": "none",
+  "status.watching": " (watching {count} sessions)",
   "status.untitled": "(untitled)",
   "status.unknownBot": "unconfirmed",
   "status.direct": "direct",
