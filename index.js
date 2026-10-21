@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url'
 /** Cordis 插件名（出现在 Loader 诊断里）。 */
 export const name = 'telegram-control'
 /** 插件版本。 */
-export const version = '1.4.1'
+export const version = '1.4.1.1'
 
 /** 所有能力都在调用时按需通过 `ctx.get()` 解析，因此不声明硬依赖。 */
 export const inject = []
@@ -672,7 +672,7 @@ async function httpJson(rt, url, payload, signal) {
       headers,
       body,
       signal: signal ?? rt.ac.signal,
-      timeoutMs: Math.max(10_000, (rt.cfg.pollTimeoutSeconds + 15) * 1000),
+      timeoutMs: Math.max(10_000, (rt.cfg.pollTimeoutSeconds + 25) * 1000),
     })
     return { status: response.status, text: response.text }
   }
@@ -776,8 +776,10 @@ async function editMessage(rt, chatId, messageId, text, extra) {
 async function sendTyping(rt, chatId) {
   try {
     await tgCall(rt, 'sendChatAction', { chat_id: chatId, action: 'typing' })
+    rt.stats.typingOk += 1
   } catch {
-    /* 提示状态失败无关紧要 */
+    rt.stats.typingFail += 1
+    /* 提示状态失败无关紧要，但计数保留给远程排查 */
   }
 }
 
@@ -1143,7 +1145,23 @@ function createRuntime(ctx, cfg, logger, statePath) {
     offset: 0,
     saveTimer: null,
     startedAt: Date.now(),
-    stats: { updates: 0, lastUpdateAt: 0, messages: 0, tools: 0, errors: 0, lastError: null },
+    stats: {
+      updates: 0,
+      lastUpdateAt: 0,
+      messages: 0,
+      tools: 0,
+      errors: 0,
+      lastError: null,
+      // 远程排查用：轮询/打字计数 + 最近错误环形缓冲（成功时清 lastError 但保留这些，别让证据消失）
+      polls: 0,
+      pollErrors: 0,
+      timeouts: 0,
+      lastPollAt: 0,
+      lastErrorAt: 0,
+      typingOk: 0,
+      typingFail: 0,
+      recentErrors: [],
+    },
     power: { pending: null, last: null },
     powerConfirm: new Map(),
     // chatId → 上次发送「正在输入…」状态的时间戳（节流用）
@@ -1311,7 +1329,12 @@ function maskToken(token) {
 
 async function pollLoop(rt) {
   let backoff = 1000
+  // 超时意味着「中继/代理把长轮询连接丢掉了」，下一轮很可能就正常，
+  // 所以用短固定退避而不是指数爆炸——否则一次超时要等最久 30 秒，期间 bot 完全「没动静」。
+  const TIMEOUT_BACKOFF_MS = 600
   while (!rt.ac.signal.aborted) {
+    rt.stats.polls += 1
+    rt.stats.lastPollAt = Date.now()
     let updates
     try {
       updates = await tgCall(
@@ -1331,16 +1354,30 @@ async function pollLoop(rt) {
     } catch (error) {
       if (rt.ac.signal.aborted) break
       const status = Number(error?.status)
+      const message = String(error?.message || error)
+      const isTimeout = /超时|timeout|ETIMEDOUT|ESOCKETTIMEDOUT|UND_ERR_SOCKET/i.test(message)
+      // 502/503/504 是反代/网关超时，524 是 Cloudflare 专有的「源站超时」：
+      // 这类错误返回的是 HTML 而不是 JSON，命中不了上面的超时正则，但本质同样是「中间层把请求掐了」，
+      // 下一轮多半就好，所以一起走快重试，别按指数退避凉 30 秒。
+      const isGateway = [502, 503, 504, 524].includes(status)
+      rt.stats.pollErrors += 1
+      if (isTimeout || isGateway) rt.stats.timeouts += 1
       if (status === 401 || status === 404) {
         rt.stats.errors += 1
         rt.stats.lastError = `botToken 无效或群组不可用（HTTP ${status}）`
+        rt.stats.lastErrorAt = Date.now()
+        pushRecentError(rt, rt.stats.lastError)
         rt.logger.error('telegram-control: botToken 无效或群组不可用，轮询停止')
         break
       }
       rt.stats.errors += 1
-      rt.stats.lastError = String(error?.message || error)
-      rt.logger.warn(`telegram-control: getUpdates 失败 ${error?.message || error}`)
-      await sleep(status === 409 ? 10_000 : backoff, rt.ac.signal)
+      rt.stats.lastError = message
+      rt.stats.lastErrorAt = Date.now()
+      pushRecentError(rt, message)
+      rt.logger.warn(`telegram-control: getUpdates 失败 ${message}`)
+      // 409 = 并发冲突（通常另一个实例在拉），慢一点重试；超时/网关错误 = 立刻重试；其余按指数退避。
+      const delay = status === 409 ? 10_000 : isTimeout || isGateway ? TIMEOUT_BACKOFF_MS : backoff
+      await sleep(delay, rt.ac.signal)
       backoff = Math.min(backoff * 2, 30_000)
       continue
     }
@@ -1356,6 +1393,14 @@ async function pollLoop(rt) {
       void handleUpdate(rt, update)
     }
   }
+}
+
+/** 保留最近几条错误（含时间戳），让 /status 和状态文件在 lastError 被清掉后仍有证据可查。 */
+function pushRecentError(rt, text) {
+  const list = rt.stats.recentErrors ?? []
+  list.push({ at: Date.now(), text: String(text).slice(0, 200) })
+  if (list.length > 6) list.splice(0, list.length - 6)
+  rt.stats.recentErrors = list
 }
 
 // ────────────────────────────── 更新分发 ──────────────────────────────
@@ -2870,6 +2915,15 @@ async function runCommand(rt, chat, command, args) {
   }
 }
 
+/** 最近一次轮询错误的可读文本：有 recentErrors 就取最新一条，否则留空。 */
+function lastPollErrorText(rt) {
+  const list = rt.stats.recentErrors ?? []
+  const last = list[list.length - 1]
+  if (!last) return ''
+  const at = new Date(last.at).toLocaleTimeString('zh-CN', { hour12: false })
+  return t(rt, 'status.lastPollError', { at, error: last.text })
+}
+
 async function statusText(rt, chat) {
   const controller = sessionController(rt)
   let liveCount = 0
@@ -2913,6 +2967,14 @@ async function statusText(rt, chat) {
     updates: rt.stats.updates,
     messages: rt.stats.messages,
     errors: rt.stats.errors,
+    diagnostics: t(rt, 'status.diagnostics', {
+      polls: rt.stats.polls,
+      pollErrors: rt.stats.pollErrors,
+      timeouts: rt.stats.timeouts,
+      typingOk: rt.stats.typingOk,
+      typingFail: rt.stats.typingFail,
+    }),
+    lastPollError: lastPollErrorText(rt),
     proxy: rt.cfg.proxyUrl || t(rt, 'status.direct'),
     configUrl: rt.cfg.configPort > 0 ? `http://127.0.0.1:${rt.cfg.configPort}/` : t(rt, 'status.configClosed'),
     configPath: join(dshHome(), 'telegram-control.json'),

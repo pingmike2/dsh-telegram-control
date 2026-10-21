@@ -67,6 +67,7 @@ const api = {
   markdownMessages: [],
   rejectMarkdown: false,
   failGetUpdates: false,
+  failGetUpdatesStatus: 0,
   nextUpdateId: 1,
   nextMessageId: 1,
   botUsername: 'dsh_test_bot',
@@ -96,8 +97,14 @@ const server = createServer((req, res) => {
     }
     if (method === 'getUpdates') {
       if (api.failGetUpdates) {
-        res.writeHead(500, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ ok: false, error_code: 500, description: 'Internal Server Error' }))
+        // failGetUpdates 可给具体状态码：524/502/504 走网关超时分支（Cloudflare 反代常见），500 走普通故障
+        const code = Number(api.failGetUpdatesStatus) || 500
+        res.writeHead(code, { 'content-type': code === 524 ? 'text/html' : 'application/json' })
+        res.end(
+          code === 524
+            ? '<html><body><h1>524 A timeout occurred</h1></body></html>'
+            : JSON.stringify({ ok: false, error_code: code, description: 'Internal Server Error' }),
+        )
         return
       }
       const offset = Number(body.offset ?? 0)
@@ -528,6 +535,11 @@ try {
   await waitFor(
     () => hasText(CHAT_ID, (text) => text.includes('状态：') && text.includes('语言：zh')),
     '/status 输出运行状态',
+  )
+  pushText('/status')
+  await waitFor(
+    () => hasText(CHAT_ID, (text) => text.includes('轮询：') && text.includes('打字：')),
+    '/status 输出轮询与打字诊断（手机端没动静时可远程定位）',
   )
 
   // ───────────────────── prompt 桥接 ─────────────────────
@@ -1095,6 +1107,39 @@ try {
     api.failGetUpdates = false
     await waitFor(async () => (await readJson(statusPath))?.state === 'running', '恢复后状态回到 running', 20_000)
     ok((await readJson(statusPath))?.stats?.lastError === null, '恢复后 lastError 清空，不再一直显示故障')
+    const stats = (await readJson(statusPath))?.stats ?? {}
+    ok(
+      Number(stats.pollErrors) >= 1,
+      '轮询失败计入 pollErrors，便于远程排查',
+      JSON.stringify({ pollErrors: stats.pollErrors, polls: stats.polls }),
+    )
+    ok(
+      Array.isArray(stats.recentErrors) && stats.recentErrors.length >= 1,
+      '最近错误保留在 recentErrors，lastError 清空后证据仍在',
+      JSON.stringify(stats.recentErrors?.[0]),
+    )
+  }
+
+  {
+    // Cloudflare 反代最常见的 524（HTML 响应，不是 JSON）也必须算「中间层超时」并快速重试
+    const before = (await readJson(statusPath))?.stats ?? {}
+    api.failGetUpdates = true
+    api.failGetUpdatesStatus = 524
+    await waitFor(
+      async () => {
+        const now = (await readJson(statusPath))?.stats ?? {}
+        return Number(now.timeouts) > Number(before.timeouts)
+      },
+      '524 网关超时计入 timeouts',
+      15_000,
+    )
+    ok(
+      Number((await readJson(statusPath))?.stats?.pollErrors) > Number(before.pollErrors),
+      '524 网关超时计入 pollErrors',
+    )
+    api.failGetUpdates = false
+    api.failGetUpdatesStatus = 0
+    await waitFor(async () => (await readJson(statusPath))?.state === 'running', '524 之后能快速恢复 running', 15_000)
   }
 
   {

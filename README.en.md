@@ -103,7 +103,7 @@ Fill in `botToken`, `allowedUserIds` / `allowedChatIds`, proxy and toggles (incl
 | `allowedUserIds` / `allowedChatIds` | empty | Allowlists; when both are set they intersect, numbers only |
 | `workingDirectory` | empty | Default working directory; empty = DSH default |
 | `agentPreset` | empty | Agent preset for new sessions; empty = `standard` |
-| `pollTimeoutSeconds` | `25` | `getUpdates` long-poll duration (1–50) |
+| `pollTimeoutSeconds` | `25` | `getUpdates` long-poll duration (1–50); use `15` behind a Cloudflare reverse proxy |
 | `maxMessageChars` | `3600` | Per-message cap (200–4096); longer output is split into chunks |
 | `answerApprovals` | `false` | Take over tool approvals → inline buttons; timeout counts as rejection |
 | `answerQuestions` | `false` | Take over `ask_user_question` → buttons / free-text replies |
@@ -169,7 +169,7 @@ Every supervision tick rewrites `%DSH_HOME%\telegram-control-status.json`:
 
 ```json
 {
-  "version": "1.4.1",
+  "version": "1.4.1.1",
   "state": "running",
   "pid": 3900,
   "startedAt": 1792418496591,
@@ -180,11 +180,11 @@ Every supervision tick rewrites `%DSH_HOME%\telegram-control-status.json`:
   "boundSessions": 1,
   "approvalsEnabled": true,
   "questionsEnabled": true,
-  "stats": { "updates": 12, "messages": 9, "errors": 0 }
+  "stats": { "updates": 12, "messages": 9, "errors": 0, "polls": 340, "pollErrors": 0, "timeouts": 0, "typingOk": 812, "typingFail": 0, "recentErrors": [] }
 }
 ```
 
-`state` is one of `waiting-token` (waiting for config) / `running` (polling) / `degraded` (errors, retrying) / `stopped` (uninstalled or disabled) / `disabled`. `updatedAt` refreshes every 5 seconds — **it is the “is the plugin alive” heartbeat**. At runtime it also carries `stats: { updates, messages, errors, lastUpdateAt, lastError }`, and the token inside `bot` is masked to `id:***last4`.
+`state` is one of `waiting-token` (waiting for config) / `running` (polling) / `degraded` (errors, retrying) / `stopped` (uninstalled or disabled) / `disabled`. `updatedAt` refreshes every 5 seconds — **it is the “is the plugin alive” heartbeat**. At runtime it also carries `stats: { updates, messages, errors, lastUpdateAt, lastError, polls, pollErrors, timeouts, typingOk, typingFail, recentErrors }`: `lastError` is cleared as soon as one poll succeeds (so the state no longer sticks at `degraded`), while `pollErrors` / `timeouts` / `recentErrors` are monotonic counters plus a ring buffer of the last six errors — **the evidence survives recovery**, which is what makes intermittent “the phone went silent” reports diagnosable after the fact. The token inside `bot` is masked to `id:***last4`.
 
 ## Commands
 
@@ -288,6 +288,30 @@ The heartbeat renews every 4s and gives up after 3 minutes without events; if
 turn on `notifyToolFailures` for one round of tool-failure pushes, or use
 `/reasoning on` to watch the reasoning stream and find the hang.
 
+### The phone goes silent while desktop is fine
+
+First tell apart *server did not send* from *phone did not receive* — send `/status`
+and read the two new diagnostic lines:
+
+```text
+Polling: 1234 calls · 3 failures (3 timeouts) · typing: ok 987 / fail 0
+Last error (14:31:07): getUpdates: proxy request timed out (40000ms)
+```
+
+- `typing: ok` climbing while `failures` / `Last error` stay flat → the server keeps
+  sending; the problem is on the phone's link. If the phone has a Telegram
+  **webproxy / MTProxy** enabled, messages must traverse one more hop, and one hiccup
+  there looks exactly like “desktop fine, phone frozen”. Switch networks or use a
+  direct connection to confirm.
+- `failures` / `timeouts` climbing → the fetch side is being cut. The usual cause is a
+  **Cloudflare reverse proxy** in front of the Bot API: a long poll is the request shape
+  intermediaries drop most eagerly. Set `pollTimeoutSeconds` to `15`; together with the
+  600ms fast retry (timeouts no longer walk the 2/4/8… 30s exponential backoff) the dead
+  windows effectively disappear.
+- `typing: fail` climbing while polling is fine → `sendChatAction` is rate-limited or
+  rejected by the relay; widen the `thinkingStatus` interval or check whether
+  `apiBaseUrl` restricts POST.
+
 ## Tests
 
 ```text
@@ -296,7 +320,7 @@ npm test          # same as node test/tg-control.test.mjs
 
 A fake Bot API (a real http server speaking `getUpdates` long-polling) plus fake Cordis ctx / `sessionController` / `tools` / `pluginManager` run the real plugin end to end: command-menu registration, auth, command dispatch, prompt bridging, streaming event relay, **reasoning kept off screen with a continuous typing heartbeat**, language switching, shell / file / direct tool calls, approval and question inline buttons, session naming and switching, power control (including the confirmation flow and `allowPower` off), config-page CSRF and saving, Markdown rendering with the plain-text fallback, hot reload, and uninstall cleanup.
 
-Currently **all 166 assertions pass**. The suite points `powerExec` at `test/fixtures/fake-shutdown.mjs`, so **it can never really power off the machine**.
+Currently **all 172 assertions pass**. The suite points `powerExec` at `test/fixtures/fake-shutdown.mjs`, so **it can never really power off the machine**.
 
 ## Versioning convention
 

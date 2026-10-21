@@ -103,7 +103,7 @@ plugin_manager install_bundle  target = <clone 出来的目录绝对路径>
 | `allowedUserIds` / `allowedChatIds` | 空 | 白名单；两者都非空取交集，都以数字填 |
 | `workingDirectory` | 空 | 默认工作目录；留空用 DSH 默认 |
 | `agentPreset` | 空 | 新会话用的 agent preset；留空 `standard` |
-| `pollTimeoutSeconds` | `25` | `getUpdates` 长轮询时长（1–50） |
+| `pollTimeoutSeconds` | `25` | `getUpdates` 长轮询时长（1–50）；走 Cloudflare 反代建议 `15` |
 | `maxMessageChars` | `3600` | 单条消息上限（200–4096），超出自动分段 |
 | `answerApprovals` | `false` | 接管工具审批 → Telegram 内联按钮，超时按拒绝处理 |
 | `answerQuestions` | `false` | 接管 `ask_user_question` → 按钮/自由文本 |
@@ -169,7 +169,7 @@ Node 的 `fetch`（undici）**不读 Windows 系统代理**，所以在需要代
 
 ```json
 {
-  "version": "1.4.1",
+  "version": "1.4.1.1",
   "state": "running",
   "pid": 3900,
   "startedAt": 1792418496591,
@@ -180,11 +180,11 @@ Node 的 `fetch`（undici）**不读 Windows 系统代理**，所以在需要代
   "boundSessions": 1,
   "approvalsEnabled": true,
   "questionsEnabled": true,
-  "stats": { "updates": 12, "messages": 9, "errors": 0 }
+  "stats": { "updates": 12, "messages": 9, "errors": 0, "polls": 340, "pollErrors": 0, "timeouts": 0, "typingOk": 812, "typingFail": 0, "recentErrors": [] }
 }
 ```
 
-`state` 取值：`waiting-token`（等待配置）/ `running`（轮询中）/ `degraded`（轮询报错重试）/ `stopped`（已卸载或禁用）/ `disabled`。`updatedAt` 每 5 秒刷新——**它就是"插件是否活着"的心跳**。运行时还会带 `stats: { updates, messages, errors, lastUpdateAt, lastError }`，`bot` 字段里的 token 只保留 `id:***末4位`。
+`state` 取值：`waiting-token`（等待配置）/ `running`（轮询中）/ `degraded`（轮询报错重试）/ `stopped`（已卸载或禁用）/ `disabled`。`updatedAt` 每 5 秒刷新——**它就是"插件是否活着"的心跳**。运行时还会带 `stats: { updates, messages, errors, lastUpdateAt, lastError, polls, pollErrors, timeouts, typingOk, typingFail, recentErrors }`：`lastError` 成功一次就清空（避免长期挂在 `degraded`），而 `pollErrors` / `timeouts` / `recentErrors` 是只增不减的计数器与最近 6 条错误环形缓冲，**成功之后证据仍然留着**，专供"手机端有时候没动静"这类偶发问题事后定位。`bot` 字段里的 token 只保留 `id:***末4位`。
 
 ## 命令
 
@@ -287,6 +287,24 @@ del %DSH_HOME%\telegram-control.json %DSH_HOME%\telegram-control-state.json
 `stats.lastError`，把 `notifyToolFailures` 打开收一轮工具失败推送，或 `/reasoning on`
 直接看思考流定位卡点。
 
+### 手机端（iOS/Android）有时候「没动静」，电脑端正常
+
+先分清是**服务端没发**还是**手机端没收到**——发 `/status` 看新增的两行诊断：
+
+```text
+轮询：1234 次 · 失败 3（超时 3）· 打字：ok 987 / fail 0
+最近错误（14:31:07）：getUpdates: 代理请求超时（40000ms）
+```
+
+- `打字：ok` 在涨、`失败`/`最近错误` 不涨 → 服务端一直在正常发包，问题在手机侧链路。
+  手机若开了 Telegram 的 **webproxy / MTProxy**，消息要再穿一层代理才落到客户端，
+  代理抖一下就是「电脑好的、手机不动」；换网络或用直连对比即可确认。
+- `轮询：失败` / `超时` 在涨 → 是拉取侧被掐断。Bot API 前面挂了 **Cloudflare 反代**时最常见：
+  长轮询是最容易被中间层丢弃的请求形态。把 `pollTimeoutSeconds` 压到 `15`，
+  配合 600ms 快速重试（超时不再走 2/4/8…最多 30 秒的指数退避），空窗基本消失。
+- `打字：fail` 在涨而 `轮询` 正常 → `sendChatAction` 被限流或中继拒绝，调大
+  `thinkingStatus` 间隔或检查 `apiBaseUrl` 是否对 POST 做了限制。
+
 ## 测试
 
 ```text
@@ -295,7 +313,7 @@ npm test          # 等价于 node test/tg-control.test.mjs
 
 本地起一个假的 Bot API（真 http server，走 `getUpdates` 长轮询）+ 假的 Cordis ctx / `sessionController` / `tools` / `pluginManager`，真跑插件：命令菜单注册、鉴权、命令分发、prompt 桥接、流式事件回流、**思考过程不上屏与 typing 节流**、语言切换、shell / 文件 / 工具直调、审批与提问内联按钮、会话命名与切换、电源控制（含二次确认与 `allowPower` 关闭）、配置页 CSRF 与保存、Markdown 渲染与纯文本兜底、热加载、卸载清理。
 
-当前：**166 项断言全部通过**。测试用 `powerExec` 指向 `test/fixtures/fake-shutdown.mjs`，**绝不会真的关机**。
+当前：**172 项断言全部通过**。测试用 `powerExec` 指向 `test/fixtures/fake-shutdown.mjs`，**绝不会真的关机**。
 
 ## 版本号约定
 
