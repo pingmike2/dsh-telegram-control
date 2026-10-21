@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url'
 /** Cordis 插件名（出现在 Loader 诊断里）。 */
 export const name = 'telegram-control'
 /** 插件版本。 */
-export const version = '1.4.1.3'
+export const version = '1.5.0'
 
 /** 所有能力都在调用时按需通过 `ctx.get()` 解析，因此不声明硬依赖。 */
 export const inject = []
@@ -62,6 +62,7 @@ const DEFAULTS = {
   powerExec: '',
   shellPath: '',
   reloadSeconds: 5,
+  apiTimeoutSeconds: 30,
 }
 
 /** 表示“这次请求交回给后面的 answerer 处理”。 */
@@ -477,6 +478,9 @@ function normalizeConfig(staticConfig, fileConfig) {
     powerExec: typeof merged.powerExec === 'string' ? merged.powerExec.trim() : '',
     shellPath: typeof merged.shellPath === 'string' ? merged.shellPath.trim() : '',
     reloadSeconds: clampInt(merged.reloadSeconds, 2, 600, DEFAULTS.reloadSeconds),
+    // 直连 fetch 以前没有任何超时：中继/CF 把连接挂住后，请求永不返回，
+    // 而每个聊天是串行队列，于是一条卡死的请求能把这个聊天的所有回复一起憋死。
+    apiTimeoutSeconds: clampInt(merged.apiTimeoutSeconds, 5, 120, DEFAULTS.apiTimeoutSeconds),
   }
 }
 
@@ -662,36 +666,80 @@ function proxyRequest(proxyUrl, targetUrl, options) {
   })
 }
 
+/**
+ * 给 fetch 用的「外部 signal + 自身超时」组合信号。
+ * 任一来源触发都会中止请求，且不会互相干扰（外部 signal 与计时器清理干净）。
+ */
+function timeoutSignal(signal, timeoutMs) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => {
+    controller.abort(new Error(`请求超时（${timeoutMs}ms）`))
+  }, timeoutMs)
+  timer.unref?.()
+  const abortFromOuter = () => controller.abort(signal?.reason)
+  if (signal) {
+    if (signal.aborted) abortFromOuter()
+    else signal.addEventListener('abort', abortFromOuter, { once: true })
+  }
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      clearTimeout(timer)
+      signal?.removeEventListener?.('abort', abortFromOuter)
+    },
+  }
+}
+
 /** 统一 HTTP 入口：有代理走隧道，没代理用内建 fetch。 */
-async function httpJson(rt, url, payload, signal) {
+async function httpJson(rt, url, payload, signal, timeoutMs) {
   const body = JSON.stringify(payload ?? {})
   const headers = { 'content-type': 'application/json' }
+  const outer = signal ?? rt.ac.signal
+  // 长轮询必须活得比 pollTimeoutSeconds 久，其余请求用 apiTimeoutSeconds 兜底；
+  // 以前直连分支完全没有超时，连接被中继挂住就把整条聊天队列堵死。
+  const limit = Math.max(5_000, Number(timeoutMs) || rt.cfg.apiTimeoutSeconds * 1000)
   if (rt.cfg.proxyUrl) {
     const response = await proxyRequest(rt.cfg.proxyUrl, url, {
       method: 'POST',
       headers,
       body,
-      signal: signal ?? rt.ac.signal,
-      timeoutMs: Math.max(10_000, (rt.cfg.pollTimeoutSeconds + 25) * 1000),
+      signal: outer,
+      timeoutMs: limit,
     })
     return { status: response.status, text: response.text }
   }
-  const response = await fetch(url, {
-    method: 'POST',
-    headers,
-    body,
-    signal: signal ?? rt.ac.signal,
-  })
-  return { status: response.status, text: await response.text() }
+  const guarded = timeoutSignal(outer, limit)
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body,
+      signal: guarded.signal,
+    })
+    return { status: response.status, text: await response.text() }
+  } catch (error) {
+    if (guarded.signal.aborted && !outer.aborted) {
+      throw Object.assign(new Error(`超时：${limit}ms 内无响应`), { cause: error?.cause ?? error })
+    }
+    throw error
+  } finally {
+    guarded.dispose()
+  }
 }
 
 // ────────────────────────────── Telegram API ──────────────────────────────
 
 async function tgCall(rt, method, params, signal) {
   const url = `${rt.cfg.apiBaseUrl}/bot${rt.cfg.botToken}/${method}`
+  // getUpdates 是长轮询：它本来就该挂到 pollTimeoutSeconds 才返回，
+  // 超时上限要压在它之上再给点余量，否则每一轮都会被自己的超时掐断。
+  const timeoutMs =
+    method === 'getUpdates'
+      ? Math.max(10_000, (rt.cfg.pollTimeoutSeconds + 20) * 1000)
+      : Math.max(5_000, rt.cfg.apiTimeoutSeconds * 1000)
   let response
   try {
-    response = await httpJson(rt, url, params, signal)
+    response = await httpJson(rt, url, params, signal, timeoutMs)
   } catch (error) {
     const cause = error?.cause?.code || error?.cause?.message
     const suffix = cause ? `（${cause}${rt.cfg.proxyUrl ? '，代理 ' + rt.cfg.proxyUrl : '，未使用代理'}）` : ''
@@ -722,8 +770,12 @@ async function tgCall(rt, method, params, signal) {
 async function postMessage(rt, payload, method = 'sendMessage') {
   const text = String(payload.text ?? '')
   if (rt.cfg.format !== 'plain' && text.trim()) {
+    // 只要是 markdown 模式就按 MarkdownV2 发。
+    // 以前这里还判了 `rendered !== text`，可「只有行内代码」的文本转换后和原文一字不差，
+    // 于是被判成"没做转换"走了纯文本，反引号和箭头就以符号原样显示在手机上。
+    // 渲染器产出的永远是合法 MarkdownV2，被 Telegram 拒收再回退纯文本即可。
     const rendered = markdownToMdV2(text)
-    if (rendered && rendered !== text) {
+    if (rendered) {
       try {
         return await tgCall(rt, method, { ...payload, text: rendered, parse_mode: 'MarkdownV2' })
       } catch (error) {
@@ -1120,9 +1172,23 @@ function getChat(rt, chatId) {
 }
 
 function enqueue(rt, chat, task) {
-  chat.queue = chat.queue.then(task).catch((error) => {
+  // 每个聊天一条串行队列：一条任务卡住（连接挂死、等待 Host 不回）就会把后面
+  // 所有命令一起堵死，表现出来就是「手机端偶尔彻底没动静」。
+  // 这里给任务加个看门狗：超时就记日志并放行队列，后面的命令照常处理。
+  const watchdogMs = Math.max(60_000, rt.cfg.apiTimeoutSeconds * 1000 + 60_000)
+  const run = chat.queue.then(task).catch((error) => {
     rt.logger.warn(`telegram-control: 处理消息失败 ${error?.stack || error?.message || error}`)
   })
+  // sleep() 在信号已中止时会立刻 resolve；插件正在停止时不能让看门狗抢先「跳过」任务，
+  // 所以中止期间换成一个永不落地的 Promise（只挂起，不参与竞争）。
+  const watchdog = rt.ac.signal.aborted
+    ? new Promise(() => {})
+    : sleep(watchdogMs, rt.ac.signal).then(() => {
+        if (rt.ac.signal.aborted) return
+        rt.logger.warn(`telegram-control: 单条消息处理超过 ${Math.round(watchdogMs / 1000)} 秒，跳过等待以免堵住队列`)
+      })
+  const guarded = Promise.race([run, watchdog])
+  chat.queue = guarded.catch(() => {})
   return chat.queue
 }
 
@@ -2556,7 +2622,13 @@ async function runCommand(rt, chat, command, args) {
       }
       rt.cfg.lang = value
       await persistConfigPatch(rt, { lang: value })
-      await registerBotCommands(rt, true)
+      // 菜单注册要走 Bot API，任何异常都不能连累下面那句确认——
+      // 否则用户发了 /lang，语言其实已经切好了，手机上却一条回复都收不到。
+      try {
+        await registerBotCommands(rt, true)
+      } catch (error) {
+        rt.logger.warn(`telegram-control: 重注册命令菜单失败 ${error?.message || error}`)
+      }
       await sendText(rt, chat.id, t(rt, 'lang.set', { lang: value }))
       return
     }

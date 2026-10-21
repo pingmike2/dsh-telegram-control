@@ -83,6 +83,8 @@ const api = {
   edits: [],
   markdownMessages: [],
   rejectMarkdown: false,
+  hangNextSend: false,
+  hung: [],
   failGetUpdates: false,
   failGetUpdatesStatus: 0,
   nextUpdateId: 1,
@@ -138,6 +140,13 @@ const server = createServer((req, res) => {
       }
     }
     if (method === 'sendMessage') {
+      // hangNextSend：模拟中继/CF 把连接挂住、永不返回（只坑这一条请求）。
+      // 插件必须靠自己的请求超时脱身，而不是把整条聊天队列一起冻死。
+      if (api.hangNextSend) {
+        api.hangNextSend = false
+        api.hung.push(String(body.text ?? ''))
+        return // 故意不响应
+      }
       if (body.parse_mode && api.rejectMarkdown) {
         res.writeHead(400, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ ok: false, error_code: 400, description: "Bad Request: can't parse entities: unexpected end of the entity" }))
@@ -234,6 +243,8 @@ const baseConfig = {
   workingDirectory: workDir,
   agentPreset: '',
   pollTimeoutSeconds: 1,
+  // 请求超时压到最短（5 秒），这样"连接被挂住"的场景能在测试里快速验完
+  apiTimeoutSeconds: 5,
   maxMessageChars: 3600,
   answerApprovals: false,
   answerQuestions: false,
@@ -1239,6 +1250,22 @@ try {
     ok(sent?.text.includes('[链接](https://example.com)'), '链接保留')
   }
 
+  // 只有行内代码的文本：转换前后一模一样。以前据此判成"没做转换"走了纯文本，
+  // 手机上就看到裸反引号和箭头。现在必须照样带 parse_mode=MarkdownV2。
+  {
+    const before = api.markdownMessages.length
+    const codeOnly = '推上去了（`main -> main`、`[new tag] v1.4.1.3`）。'
+    emitSession(mdSession.sessionId, 'assistant/message', { message: { content: [{ type: 'text', text: codeOnly }] } })
+    await waitFor(() => api.markdownMessages.length > before, '纯行内代码的消息也走 MarkdownV2', 6000)
+    const sent = api.markdownMessages.at(-1)
+    ok(sent?.parse_mode === 'MarkdownV2', '行内代码消息带 parse_mode=MarkdownV2', JSON.stringify(sent?.parse_mode))
+    ok(
+      sent?.text === codeOnly,
+      '行内代码内容原样送达（不被转义成符号）',
+      JSON.stringify(sent?.text),
+    )
+  }
+
   // 解析失败必须退回纯文本，不能丢消息
   api.rejectMarkdown = true
   emitSession(mdSession.sessionId, 'assistant/message', { message: { content: [{ type: 'text', text: '**兜底** 1.2.0' }] } })
@@ -1263,6 +1290,24 @@ try {
   await waitFor(() => hasText(CHAT_ID, (text) => text.includes('状态：')), '热加载后插件仍在运行且响应命令')
 
   section('轮询故障与恢复')
+  {
+    // 中继/CF 把 sendMessage 的连接挂住时，直连 fetch 以前没有超时，
+    // 请求永不返回 → 每聊天的串行队列被冻死 → 手机端「偶尔彻底没动静」。
+    // 现在必须靠 apiTimeoutSeconds 自己脱身，后面的命令照常响应。
+    const beforeCount = api.messages.length
+    api.hangNextSend = true
+    pushText('/version')
+    await waitFor(() => api.hung.length > 0, '挂住的请求确实发出去了', 8000)
+    ok(api.hung.length >= 1 && api.hung[0].length > 0, '有请求被挂在半路（没拿到响应）', JSON.stringify(api.hung[0]?.slice(0, 40)))
+    const recoveredAt = Date.now()
+    pushText('/help')
+    await waitFor(
+      () => api.messages.slice(beforeCount).some((item) => item.text.includes('/shutdown')),
+      '一条请求挂死后，后面的命令仍然能收到回复',
+      20_000,
+    )
+    ok(Date.now() - recoveredAt < 20_000, '恢复用时在上限内（说明请求超时生效，队列没被冻死）')
+  }
   {
     api.failGetUpdates = true
     await waitFor(async () => (await readJson(statusPath))?.state === 'degraded', '轮询失败时状态标记 degraded', 10_000)

@@ -104,6 +104,7 @@ Fill in `botToken`, `allowedUserIds` / `allowedChatIds`, proxy and toggles (incl
 | `workingDirectory` | empty | Default working directory; empty = DSH default |
 | `agentPreset` | empty | Agent preset for new sessions; empty = `standard` |
 | `pollTimeoutSeconds` | `25` | `getUpdates` long-poll duration (1–50); use `15` behind a Cloudflare reverse proxy |
+| `apiTimeoutSeconds` | `30` | Timeout for every non-long-poll Bot API request (5–120). When the relay strands a connection this is what gets the plugin out instead of wedging that chat's command queue |
 | `maxMessageChars` | `3600` | Per-message cap (200–4096); longer output is split into chunks |
 | `answerApprovals` | `false` | Take over tool approvals → inline buttons; timeout counts as rejection |
 | `answerQuestions` | `false` | Take over `ask_user_question` → buttons / free-text replies |
@@ -142,6 +143,8 @@ While the model reasons it emits a flood of `reasoning` deltas. Those **never re
 
 Replies are rendered as Markdown: headings become bold, fenced code lands in monospace blocks, and reserved characters such as `*` `_` `.` are escaped instead of leaking into the chat as raw source. Tables have no MarkdownV2 syntax and monospace blocks wrap badly on a phone, so they are **turned into key/value lines**: two columns become `• label: value`, wider tables become `• header: value · header: value`. If Telegram ever rejects a message, it is resent as plain text.
 
+Inline code (the part wrapped in backticks) always shows in monospace and never degrades into raw symbols — including messages whose entire body is inline code.
+
 | Toggle | Default | Meaning |
 |---|---|---|
 | `forwardReasoning` | `false` | After `/reasoning on`, reasoning is also forwarded (prefixed with `🧠 Thinking`) — useful when debugging |
@@ -169,7 +172,7 @@ Every supervision tick rewrites `%DSH_HOME%\telegram-control-status.json`:
 
 ```json
 {
-  "version": "1.4.1.3",
+  "version": "1.5.0",
   "state": "running",
   "pid": 3900,
   "startedAt": 1792418496591,
@@ -322,7 +325,7 @@ npm test          # same as node test/tg-control.test.mjs
 
 A fake Bot API (a real http server speaking `getUpdates` long-polling) plus fake Cordis ctx / `sessionController` / `tools` / `pluginManager` run the real plugin end to end: command-menu registration, auth, command dispatch, prompt bridging, streaming event relay, **reasoning kept off screen with a continuous typing heartbeat**, language switching, shell / file / direct tool calls, approval and question inline buttons, session naming and switching, power control (including the confirmation flow and `allowPower` off), config-page CSRF and saving, Markdown rendering with the plain-text fallback, hot reload, and uninstall cleanup.
 
-Currently **all 195 assertions pass**. The suite points `powerExec` at `test/fixtures/fake-shutdown.mjs`, so **it can never really power off the machine**.
+Currently **all 202 assertions pass**. The suite points `powerExec` at `test/fixtures/fake-shutdown.mjs`, so **it can never really power off the machine**.
 
 ## Versioning convention
 

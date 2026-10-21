@@ -104,6 +104,7 @@ plugin_manager install_bundle  target = <clone 出来的目录绝对路径>
 | `workingDirectory` | 空 | 默认工作目录；留空用 DSH 默认 |
 | `agentPreset` | 空 | 新会话用的 agent preset；留空 `standard` |
 | `pollTimeoutSeconds` | `25` | `getUpdates` 长轮询时长（1–50）；走 Cloudflare 反代建议 `15` |
+| `apiTimeoutSeconds` | `30` | 除长轮询外每个 Bot API 请求的超时（5–120）。中继把连接挂住时靠它脱身，否则这个聊天的后续命令全被堵死 |
 | `maxMessageChars` | `3600` | 单条消息上限（200–4096），超出自动分段 |
 | `answerApprovals` | `false` | 接管工具审批 → Telegram 内联按钮，超时按拒绝处理 |
 | `answerQuestions` | `false` | 接管 `ask_user_question` → 按钮/自由文本 |
@@ -142,6 +143,8 @@ plugin_manager install_bundle  target = <clone 出来的目录绝对路径>
 
 消息按 Markdown 渲染：回答里的标题会变粗体、代码块进等宽块、`*` `_` `.` 这类保留字符自动转义，不再原样显示源码。表格没有 MarkdownV2 语法，等宽块在手机上换行还会错位，所以**翻成键值行**：两列变 `• 项目：结果`，多列变 `• 表头：值 · 表头：值`。哪条消息 Telegram 解析不了，就自动退回纯文本重发一次。
 
+行内代码（`反引号包起来的那段`）始终按等宽显示，不会退化成裸符号——包括整条消息只有行内代码的情况。
+
 | 开关 | 默认 | 说明 |
 |---|---|---|
 | `forwardReasoning` | `false` | `/reasoning on` 后把思考内容也发出来（带 `🧠 思考` 前缀），排查问题时用 |
@@ -169,7 +172,7 @@ Node 的 `fetch`（undici）**不读 Windows 系统代理**，所以在需要代
 
 ```json
 {
-  "version": "1.4.1.3",
+  "version": "1.5.0",
   "state": "running",
   "pid": 3900,
   "startedAt": 1792418496591,
@@ -315,7 +318,7 @@ npm test          # 等价于 node test/tg-control.test.mjs
 
 本地起一个假的 Bot API（真 http server，走 `getUpdates` 长轮询）+ 假的 Cordis ctx / `sessionController` / `tools` / `pluginManager`，真跑插件：命令菜单注册、鉴权、命令分发、prompt 桥接、流式事件回流、**思考过程不上屏与 typing 节流**、语言切换、shell / 文件 / 工具直调、审批与提问内联按钮、会话命名与切换、电源控制（含二次确认与 `allowPower` 关闭）、配置页 CSRF 与保存、Markdown 渲染与纯文本兜底、热加载、卸载清理。
 
-当前：**195 项断言全部通过**。测试用 `powerExec` 指向 `test/fixtures/fake-shutdown.mjs`，**绝不会真的关机**。
+当前：**202 项断言全部通过**。测试用 `powerExec` 指向 `test/fixtures/fake-shutdown.mjs`，**绝不会真的关机**。
 
 ## 版本号约定
 

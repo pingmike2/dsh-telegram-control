@@ -1,5 +1,6 @@
 node_modules/
 *.log
+test/_run.*
 .DS_Store
 Thumbs.db
 .idea/
