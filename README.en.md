@@ -1,6 +1,6 @@
 # dsh-telegram-control
 
-English | **[简体中文](README.md)**
+English | **[简体中文](README.md)** · Author [pingmike2](https://github.com/pingmike2) · Repo [pingmike2/dsh-telegram-control](https://github.com/pingmike2/dsh-telegram-control)
 
 A **system-level** Telegram console for DSH: install it once and the whole DeepSeek Harness — every session, every preset — becomes remotely controllable from a Telegram bot.
 
@@ -169,13 +169,13 @@ Every supervision tick rewrites `%DSH_HOME%\telegram-control-status.json`:
 
 ```json
 {
-  "version": "1.4.0",
+  "version": "1.4.1",
   "state": "running",
   "pid": 3900,
   "startedAt": 1792418496591,
   "updatedAt": 1792418496591,
   "bot": "@your_bot",
-  "botCommands": 41,
+  "botCommands": 44,
   "chats": 1,
   "boundSessions": 1,
   "approvalsEnabled": true,
@@ -196,13 +196,30 @@ Every supervision tick rewrites `%DSH_HOME%\telegram-control-status.json`:
 | Approvals & questions | `/approvals on\|off` (take over tool approvals with inline buttons), `/questions on\|off` (take over `ask_user_question`), `/reasoning on\|off` |
 | Plugins | `/plugins` `/plugin enable\|disable <patchId>` `/bundles` `/install <name\|path>` `/uninstall <name>` |
 | Host | `/power` `/shutdown [seconds\|now]` `/reboot [seconds\|now]` `/cancel` `/lock` `/sleep` `/hibernate` |
-| Misc | `/status` `/menu` `/pause` `/resume` `/myid` `/version` `/lang zh\|en` `/help` |
+| Misc | `/status` `/menu` `/pause` `/resume` `/myid` `/version` `/lang zh\|en` `/about` `/help` |
 
 ### Naming and switching sessions
 
 - **Name it while creating it**: `/new Refactor login page` → the session is created and `rename` is called immediately, so the title lands in the session projection. Add a directory with `|`: `/new F:\work\app | Refactor login page`. Without `|`, the argument is classified by content — contains a path separator or points at an existing directory → directory, otherwise → title.
 - **Switch by title**: `/use Refactor login page` (exact, case-insensitive), `/use login` (fuzzy match when unambiguous), `/use 3` `/use #3` (index from `/sessions`), `/use 9f3a12` (sessionId prefix).
 - **Switch by button**: `/sessions` attaches up to 12 inline buttons (`s:<index>`); one tap binds the session and replies “bound session: title”.
+- **Copy a session ID**: in `/sessions`, each entry is one line of “index + marks + title” followed by the **full sessionId on its own line** (`session-133df74f-…`, no spaces) — long-press that line to copy the whole thing into `/use`, `/watch`, or the Web UI.
+
+### Watching several sessions at once
+
+One chat can **watch several sessions simultaneously** (up to 5); all their output streams into the same Telegram chat:
+
+| Command | Effect |
+|---|---|
+| `/use <index\|id\|title>` | Switches the **primary** session — prompts, `/cancel`, `/fork`, `/rename` target it; already-watched sessions stay subscribed |
+| `/watch <index\|id\|title>` | Subscribes one more session (read-only); pushed messages carry a `🏷 title` prefix so they never blur together |
+| `/watch` | Lists subscriptions: `📌` primary, `👁` watched, `▶️` currently working |
+| `/unwatch <index\|id\|title>` | Drops one; if it was the primary, the first remaining session takes over automatically |
+| `/unwatch all` | Drops everything (back to strict one-to-one mode) |
+
+- Only the **primary** session receives prompts; watched sessions are output-only. When two run at once, the “typing…” heartbeat stays on as long as at least one is working.
+- Subscriptions persist in the state file (a `watched` array), so they survive plugin reloads and DSH restarts — remote monitoring does not drop on a hot reload.
+- In `/sessions`, `📌` marks the primary and `👁` marks watched sessions.
 - **See the title**: `/info` shows the bound session's title/ID/cwd/state/event count, and `/status` includes “bound session: title · id”.
 - Ambiguous matches are never guessed: the plugin lists candidates so you can retry with an index or a more precise title; strings that are not ID-shaped (including Chinese text) are never treated as a sessionId.
 
@@ -279,7 +296,20 @@ npm test          # same as node test/tg-control.test.mjs
 
 A fake Bot API (a real http server speaking `getUpdates` long-polling) plus fake Cordis ctx / `sessionController` / `tools` / `pluginManager` run the real plugin end to end: command-menu registration, auth, command dispatch, prompt bridging, streaming event relay, **reasoning kept off screen with a continuous typing heartbeat**, language switching, shell / file / direct tool calls, approval and question inline buttons, session naming and switching, power control (including the confirmation flow and `allowPower` off), config-page CSRF and saving, Markdown rendering with the plain-text fallback, hot reload, and uninstall cleanup.
 
-Currently **all 141 assertions pass**. The suite points `powerExec` at `test/fixtures/fake-shutdown.mjs`, so **it can never really power off the machine**.
+Currently **all 166 assertions pass**. The suite points `powerExec` at `test/fixtures/fake-shutdown.mjs`, so **it can never really power off the machine**.
+
+## Versioning convention
+
+Releases only ever extend the **fourth segment**; major/minor/patch stay put:
+
+```text
+1.4.0 → 1.4.0.1 → 1.4.0.2 → 1.4.0.3 → …
+```
+
+- Everyday work, bug fixes, small features: run `npm run ver` (= `node scripts/bump-version.mjs`). It increments the last segment and rewrites all four version spots (`package.json`, `index.js`, both README status samples), then self-checks that they agree.
+- Only when a version bump is **explicitly requested** (“ship 1.5”, “cut a major”) use `npm run ver -- --minor` (`1.4.0.6 → 1.5.0`), `--major`, `--patch`, or `--set 1.5.0`.
+- Preview first: `npm run ver -- --dry`.
+- The release tag mirrors the version: `v1.4.0.1`. The fourth segment can keep extending, so steady iteration never races the minor number upward.
 
 ## Design trade-offs
 

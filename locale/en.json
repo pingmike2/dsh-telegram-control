@@ -1,11 +1,11 @@
 {
-  "$meta": { "language": "en", "label": "English" },
-
+  "$meta": {
+    "language": "en",
+    "label": "English"
+  },
   "bot.shortDescription": "Drive DeepSeek Harness from Telegram: sessions, shell, files, approvals.",
   "bot.description": "DeepSeek Harness in your pocket.\n\n· Just send text — the Agent answers and streams back live\n· /sessions lists sessions, /new creates one, /use binds\n· /shell /ls /read /write control the machine directly\n· Tool approvals and questions are answered with inline buttons\n· /plugins /install manage DSH plugins\n· /power /shutdown /reboot for remote power control",
-
-  "help.body": "🤖 DSH Telegram Console\n\n[Sessions]\n/sessions list sessions (tap a button to switch)\n/new [dir] [| title] create a session with a title\n/use <index|session-id|title> switch session (fuzzy titles work)\n/info details of the bound session\n/cancel cancel the current turn\n/fork fork the current session\n/rename <title> rename the current session\n\n[Chat]\nSend plain text → it becomes a prompt; Agent output streams back\n/models list models\n/model <provider> <model> pick a model\n/presets list Agent presets\n\n[Direct control]\n/shell <command> run a command in the session directory\n/cd <dir> change directory · /pwd show it\n/ls [path] · /read <path> · /write <path>⏎content\n/tools list available tools\n/tool <name> [JSON] execute a tool directly\n\n[Approvals & questions]\n/approvals on|off take over tool approvals\n/questions on|off take over ask_user_question\n/reasoning on|off forward model reasoning to Telegram (off by default)\n\n[Plugins]\n/plugins · /plugin enable|disable <patchId>\n/bundles · /install <name|path> · /uninstall <name>\n\n[Host control]\n/power host and power status\n/shutdown [seconds|now] power off (60s by default)\n/reboot [seconds|now] restart\n/cancel cancel a turn and abort a scheduled shutdown\n/lock lock the screen · /sleep suspend · /hibernate hibernate\n\n[Misc]\n/status · /pause · /resume · /myid · /version · /menu · /lang zh|en\n\n💡 Type / to open the command menu (send /menu to re-register it if it is missing)",
-
+  "help.body": "🤖 DSH Telegram Console\n\n[Sessions]\n/sessions list sessions (tap a button to switch)\n/new [dir] [| title] create a session with a title\n/use <index|session-id|title> switch session (fuzzy titles work)\n/watch <index|id|title> also watch extra sessions (read-only)\n/unwatch <index|id|title|all> stop watching\n/info details of the bound session\n/cancel cancel the current turn\n/fork fork the current session\n/rename <title> rename the current session\n\n[Chat]\nSend plain text → it becomes a prompt; Agent output streams back\n/models list models\n/model <provider> <model> pick a model\n/presets list Agent presets\n\n[Direct control]\n/shell <command> run a command in the session directory\n/cd <dir> change directory · /pwd show it\n/ls [path] · /read <path> · /write <path>⏎content\n/tools list available tools\n/tool <name> [JSON] execute a tool directly\n\n[Approvals & questions]\n/approvals on|off take over tool approvals\n/questions on|off take over ask_user_question\n/reasoning on|off forward model reasoning to Telegram (off by default)\n\n[Plugins]\n/plugins · /plugin enable|disable <patchId>\n/bundles · /install <name|path> · /uninstall <name>\n\n[Host control]\n/power host and power status\n/shutdown [seconds|now] power off (60s by default)\n/reboot [seconds|now] restart\n/cancel cancel a turn and abort a scheduled shutdown\n/lock lock the screen · /sleep suspend · /hibernate hibernate\n\n[Misc]\n/status · /pause · /resume · /myid · /version · /menu · /lang zh|en · /about\n\n💡 Type / to open the command menu (send /menu to re-register it if it is missing)",
   "menu.start": "Get started — feature overview",
   "menu.help": "Show every command",
   "menu.menu": "Refresh the / command menu",
@@ -47,9 +47,10 @@
   "menu.lock": "Lock the screen",
   "menu.sleep": "Suspend",
   "menu.lang": "Switch language: /lang zh|en",
-
+  "menu.about": "About: author, repository and version",
+  "about.body": "🤖 dsh-telegram-control {version}\n\nRemote Telegram console: sessions, prompts, shell, tools, approvals, power — all from Telegram.\n\n· Author: {author}\n· Source: {repo}\n· Version: {version} (Node {node})\n· Issues: {issues}\n\nType /help for all commands.",
   "status.header": "🛰 DSH Telegram Console",
-  "status.body": "🛰 DSH Telegram Console\nState: {state} · v{version}\nBot: {bot}\nCommand menu: {commands}{commandsHint}\nSessions: {count} (running {running})\nBound session: {session}\nWorking dir: {cwd}\nApprovals: {approvals} · Questions: {questions}\nReasoning: {reasoning}\nPower: {power} · Pending: {pendingPower}\nLanguage: {lang}\nAllowlist: chat={chats} user={users}\nSince {since}: update={updates} msg={messages} errors={errors}\nProxy: {proxy}\nConfig page: {configUrl}\nConfig file: {configPath}\nStatus file: {statusPath}",
+  "status.body": "🛰 DSH Telegram Console\nState: {state} · v{version}\nBot: {bot}\nCommand menu: {commands}{commandsHint}\nSessions: {count} (running {running})\nBound session: {session}{watching}\nWorking dir: {cwd}\nApprovals: {approvals} · Questions: {questions}\nReasoning: {reasoning}\nPower: {power} · Pending: {pendingPower}\nLanguage: {lang}\nAllowlist: chat={chats} user={users}\nSince {since}: update={updates} msg={messages} errors={errors}\nProxy: {proxy}\nConfig page: {configUrl}\nConfig file: {configPath}\nStatus file: {statusPath}",
   "status.running": "✅ running",
   "status.paused": "⏸ paused",
   "status.commandsHint": " (send /menu to re-register)",
@@ -61,7 +62,6 @@
   "status.powerAllowed": "allowed",
   "status.powerDenied": "disabled",
   "status.none": "none",
-
   "info.body": "🗂 Current session\nTitle: {title}\nID: {id}\nDir: {cwd}\nPreset: {preset}\nState: {state}\nCreated: {created}\nEvents: {events}\nRecent: {tail}",
   "info.untitled": "(untitled — send /rename <title>)",
   "info.noSession": "No session is bound.",
@@ -70,12 +70,11 @@
   "info.running": "running",
   "info.updated": " · updated {time}",
   "info.emptyTail": "—",
-
   "sessions.header": "📋 Sessions (tap a button, or /use <index|id|title>):",
+  "sessions.copyHint": "👇 The line under each title is the full session ID (no spaces — long-press to copy it)",
   "sessions.empty": "No sessions yet. Create one with /new [dir | title].",
   "sessions.untitled": "(untitled)",
   "sessions.unavailable": "sessionController unavailable.",
-
   "power.body": "🔌 Host and power\nHost: {host} ({platform} {arch})\nProcess uptime: {uptime}\nMemory: {memory} GB · CPU: {cores} cores\nPower control: {allowed}\nPending: {pending}\nLast action: {last}\n\nUsage: /shutdown [seconds|now] · /reboot [seconds|now] · /cancel · /lock · /sleep · /hibernate",
   "power.allowed": "allowed",
   "power.denied": "disabled (allowPower=false)",
@@ -107,50 +106,53 @@
   "action.cancel": "Cancel",
   "suspend.sleep": "Suspend",
   "suspend.hibernate": "Hibernate",
-
   "cancel.turn": "⏹ Cancellation requested for the current turn",
   "cancel.turnFailed": "❌ Cancel failed: {error}",
   "cancel.powerAborted": "✅ Scheduled shutdown/restart aborted",
   "cancel.nothing": "No session is bound and no shutdown is scheduled.",
   "cancel.noPending": "ℹ️ No shutdown/restart is scheduled",
-
   "reasoning.current": "Forward reasoning: {state}\nUsage: /reasoning on|off\n(off by default — only final answers go to Telegram)",
   "reasoning.on": "🧠 Reasoning will also be sent here (this gets noisy)",
   "reasoning.off": "🧠 Only final answers now; reasoning stays in the Web UI",
   "reasoning.prefix": "🧠 Reasoning",
-
   "approvals.current": "Approval takeover: {state}\nUsage: /approvals on|off",
   "approvals.set": "🔐 Approval takeover: {state}",
   "questions.current": "Question takeover: {state}\nUsage: /questions on|off",
   "questions.set": "❓ Question takeover: {state}",
-
   "pause.on": "⏸ Paused: new messages are recorded but ignored. Send /resume to continue.",
   "pause.off": "▶️ Resumed.",
-
   "myid.body": "chat_id: {chatId}\nuser_id: {userId}\nsession: {session}",
   "myid.unknown": "unknown",
   "myid.unbound": "unbound",
-
   "menu.registered": "✅ Registered {count} commands.\nType / to open the candidate list; if the client has not refreshed yet, switch to another chat and back.",
   "menu.failed": "❌ Command registration failed; see the setMyCommands error in the Host log.",
-
   "lang.current": "Current language: {lang} (available: {list})\nUsage: /lang zh|en",
   "lang.set": "🌐 Language set to {lang}; the command menu was re-registered.",
   "lang.invalid": "Unsupported language: {lang} (available: {list})",
-
   "new.bound": "🆕 New session bound",
   "new.title": "Title: {title}",
   "new.cwd": "Dir: {cwd}",
   "new.hint": "💡 To name it: /new dir | title, or /rename <title> afterwards",
   "new.failed": "❌ Failed to create the session: {error}",
   "new.renameFailed": "⚠️ Session created but renaming failed: {error}",
-
   "use.bound": "🔗 Bound session: {title}",
   "use.usage": "Usage: /use <index|session-id|title>\n· /use 3 or /use #3\n· /use login-refactor (title, fuzzy)\n· /use 9f3a12 (session id prefix)\nSend /sessions to see the list and buttons.",
   "use.candidates": "⚠️ Several sessions matched — use an index or a more precise title:",
-
   "tool.failed": "Tool failed: {detail}",
   "rename.usage": "Usage: /rename <title>",
   "rename.done": "✏️ Renamed to: {title}",
-  "rename.failed": "❌ Rename failed: {error}"
+  "rename.failed": "❌ Rename failed: {error}",
+  "menu.watch": "Watch extra sessions (read-only): /watch <index|id|title>",
+  "menu.unwatch": "Stop watching: /unwatch <index|id|title|all>",
+  "watch.header": "👁 Watching {count}/{max} sessions (📌 = primary, prompts go there):",
+  "watch.none": "👁 Not watching any session. Use /use to bind a primary one, or /watch <index|id|title> to add one.",
+  "watch.usage": "Usage: /watch <index|session id|title> to add; /watch alone lists; /unwatch all clears everything.",
+  "watch.added": "👁 Now watching: {title} (its output lands here too; prompts still go to the primary session)",
+  "watch.already": "👁 Already watching: {title}",
+  "watch.removed": "✅ Stopped watching: {title}",
+  "watch.cleared": "✅ All watches cleared.",
+  "watch.notWatching": "Not watching: {title}",
+  "watch.switched": "({count} sessions still watched — /unwatch the ones you no longer need)",
+  "watch.limit": "⚠️ At most {count} sessions can be watched at once — /unwatch one first.",
+  "info.watched": "Watching: {count}/{max} sessions (/watch to list, /unwatch all to clear)"
 }

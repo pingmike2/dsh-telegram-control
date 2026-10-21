@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url'
 /** Cordis 插件名（出现在 Loader 诊断里）。 */
 export const name = 'telegram-control'
 /** 插件版本。 */
-export const version = '1.4.0'
+export const version = '1.4.1'
 
 /** 所有能力都在调用时按需通过 `ctx.get()` 解析，因此不声明硬依赖。 */
 export const inject = []
@@ -931,6 +931,12 @@ ${message ? `<p class="msg">${escapeHtml(message)}</p>` : ''}
   </fieldset>
   <button type="submit">保存并生效</button>
 </form>
+<footer style="margin-top:22px;padding-top:14px;border-top:1px solid #262b36;color:#9aa3b2;font-size:12px;line-height:1.8">
+  dsh-telegram-control <code>${escapeHtml(version)}</code> ·
+  作者 <a href="https://github.com/pingmike2" style="color:#7aa2f7">pingmike2</a> ·
+  <a href="https://github.com/pingmike2/dsh-telegram-control" style="color:#7aa2f7">GitHub 仓库</a> ·
+  有问题去 <a href="https://github.com/pingmike2/dsh-telegram-control/issues" style="color:#7aa2f7">Issues</a> 提
+</footer>
 </main></body></html>`
 }
 
@@ -1095,11 +1101,13 @@ function getChat(rt, chatId) {
       id: chatId,
       rt,
       sessionId: undefined,
+      sessionTitle: '',
+      // sessionId → { sessionId, ac, cursor, title }：可同时订阅多个会话
+      watchers: new Map(),
+      // 正在跑的会话 id 集合，用来判断整轮是否还在工作（心跳只在非空时亮）
+      activeTurns: new Set(),
       cwd: undefined,
       userId: undefined,
-      cursor: 0,
-      followerAC: null,
-      follower: null,
       queue: Promise.resolve(),
       lastList: [],
       lastDeniedAt: 0,
@@ -1159,6 +1167,13 @@ function createRuntime(ctx, cfg, logger, statePath) {
       rt.logger.warn(`telegram-control: getMe 失败 ${error?.message || error}`)
     }
     await registerBotCommands(rt).catch(() => {})
+    // 重启后恢复多会话订阅：远程监控不该因为一次重载就断了
+    for (const chat of rt.chats.values()) {
+      const pendingRestore = chat.restoreWatched ?? []
+      chat.restoreWatched = []
+      for (const item of pendingRestore) ensureWatcher(rt, chat, item.sessionId, item.title)
+      if (chat.sessionId && !chat.watchers.has(chat.sessionId)) ensureFollower(rt, chat)
+    }
     rt.pollTask = pollLoop(rt)
   }
   rt.stop = async () => {
@@ -1202,6 +1217,15 @@ async function loadState(rt) {
       const chat = getChat(rt, chatId)
       if (typeof value.sessionId === 'string' && value.sessionId.length > 0) chat.sessionId = value.sessionId
       if (typeof value.cwd === 'string' && value.cwd.length > 0) chat.cwd = value.cwd
+      // 恢复多会话订阅：sessionId → title
+      if (Array.isArray(value.watched)) {
+        for (const entry of value.watched) {
+          const id = typeof entry === 'string' ? entry : typeof entry?.sessionId === 'string' ? entry.sessionId : ''
+          if (id.length === 0) continue
+          const title = typeof entry?.title === 'string' ? entry.title : ''
+          chat.restoreWatched = [...(chat.restoreWatched ?? []), { sessionId: id, title }]
+        }
+      }
     }
   } catch (error) {
     if (error?.code !== 'ENOENT') rt.logger.warn(`telegram-control: 读取状态失败 ${error?.message || error}`)
@@ -1220,8 +1244,12 @@ function scheduleSave(rt) {
 async function saveState(rt) {
   const chats = {}
   for (const [id, chat] of rt.chats) {
-    if (!chat.sessionId && !chat.cwd) continue
-    chats[String(id)] = { sessionId: chat.sessionId ?? null, cwd: chat.cwd ?? null }
+    const watched = [...chat.watchers.keys()].map((sessionId) => ({
+      sessionId,
+      title: chat.watchers.get(sessionId)?.title ?? '',
+    }))
+    if (!chat.sessionId && !chat.cwd && watched.length === 0) continue
+    chats[String(id)] = { sessionId: chat.sessionId ?? null, cwd: chat.cwd ?? null, watched }
   }
   try {
     await writeJsonFile(rt.statePath, { version: 1, updatedAt: Date.now(), chats })
@@ -1255,6 +1283,9 @@ async function writeStatus(rt, state, extra) {
     paused: rt ? rt.paused === true : null,
     chats: rt ? rt.chats.size : 0,
     boundSessions: rt ? [...rt.chats.values()].filter((chat) => typeof chat.sessionId === 'string').length : 0,
+    // 远程排查常用：默认目录 + 订阅了几个会话（多会话订阅后，光看 boundSessions 会低估）
+    workingDirectory: rt ? rt.cfg.workingDirectory || null : null,
+    watchedSessions: rt ? [...rt.chats.values()].reduce((sum, chat) => sum + (chat.watchers?.size ?? 0), 0) : 0,
     approvalsEnabled: rt ? rt.approvalsEnabled === true : null,
     questionsEnabled: rt ? rt.questionsEnabled === true : null,
     stats: rt ? { ...rt.stats } : null,
@@ -1294,6 +1325,9 @@ async function pollLoop(rt) {
         rt.ac.signal,
       )
       backoff = 1000
+      // 一次成功就把上次的错误清掉：否则 lastError 会一直挂着，状态文件永远停在 degraded，
+      // 远程看状态的人分不清「现在正故障」还是「刚刚抖了一下已经好了」。
+      if (rt.stats.lastError) rt.stats.lastError = null
     } catch (error) {
       if (rt.ac.signal.aborted) break
       const status = Number(error?.status)
@@ -1438,11 +1472,10 @@ async function handleCallback(rt, query) {
       await answerCallback(rt, query.id, '列表已过期，请重新 /sessions')
       return
     }
-    stopFollower(chat)
     chat.sessionId = item.sessionId
-    chat.cursor = 0
+    chat.sessionTitle = item.title ?? ''
+    ensureWatcher(rt, chat, item.sessionId, item.title ?? '')
     scheduleSave(rt)
-    ensureFollower(rt, chat)
     await answerCallback(rt, query.id, `已切换到 ${item.title || shortId(item.sessionId)}`)
     await sendText(
       rt,
@@ -1509,65 +1542,86 @@ async function ensureSession(rt, chat) {
   if (rt.cfg.agentPreset) request.agentPreset = rt.cfg.agentPreset
   const value = await controller.create(request)
   chat.sessionId = value?.sessionId
-  chat.cursor = 0
   scheduleSave(rt)
   return chat.sessionId
 }
 
 function stopFollower(chat) {
-  if (chat.followerAC) {
-    chat.followerAC.abort()
-    chat.followerAC = null
-  }
-  chat.follower = null
+  for (const state of chat.watchers.values()) state.ac.abort()
+  chat.watchers.clear()
+  chat.activeTurns.clear()
   // 跟随者停了就不会再有 turn/end 事件，心跳得一起收掉，否则状态一直亮着
   if (chat.rt) stopThinkingHeartbeat(chat.rt, chat.id)
 }
 
-function ensureFollower(rt, chat) {
-  if (!chat.sessionId || chat.followerAC) return
-  const controller = sessionController(rt)
-  if (!controller || typeof controller.follow !== 'function') return
-  const ac = new AbortController()
-  chat.followerAC = ac
-  const sessionId = chat.sessionId
-  const run = async () => {
-    let stream
-    try {
-      stream = controller.follow({ address: { kind: 'session', sessionId }, assistantStream: false }, ac.signal)
-    } catch (error) {
-      rt.logger.warn(`telegram-control: 无法订阅会话流 ${error?.message || error}`)
-      if (chat.followerAC === ac) {
-        chat.followerAC = null
-        chat.follower = null
-      }
-      return
-    }
-    try {
-      for await (const frame of stream) {
-        if (ac.signal.aborted || chat.sessionId !== sessionId) break
-        if (!frame) continue
-        if (frame.type === 'snapshot') {
-          chat.cursor = Number(frame.cursor) || 0
-          continue
-        }
-        if (frame.type !== 'event') continue
-        const event = frame.event
-        const seq = Number(event?.seq)
-        if (!Number.isFinite(seq) || seq <= chat.cursor) continue
-        chat.cursor = seq
-        await onSessionEvent(rt, chat, event)
-      }
-    } catch (error) {
-      if (!ac.signal.aborted) rt.logger.warn(`telegram-control: 会话流中断 ${error?.message || error}`)
-    } finally {
-      if (chat.followerAC === ac) {
-        chat.followerAC = null
-        chat.follower = null
-      }
-    }
+/**
+ * 单个会话的订阅：每开一个 `controller.follow` 流，事件就回流到同一个聊天。
+ * 一个聊天可以同时订阅多个会话（多开监控），主会话负责接收 prompt。
+ */
+function ensureWatcher(rt, chat, sessionId, title = '') {
+  const id = typeof sessionId === 'string' ? sessionId : ''
+  if (id.length === 0) return null
+  const existing = chat.watchers.get(id)
+  if (existing) {
+    if (title) existing.title = title
+    return existing
   }
-  chat.follower = run()
+  const controller = sessionController(rt)
+  if (!controller || typeof controller.follow !== 'function') return null
+  const state = { sessionId: id, ac: new AbortController(), cursor: 0, title }
+  chat.watchers.set(id, state)
+  void runWatcher(rt, chat, state, controller)
+  return state
+}
+
+async function runWatcher(rt, chat, state, controller) {
+  const { sessionId, ac } = state
+  const drop = () => {
+    if (chat.watchers.get(sessionId) === state) chat.watchers.delete(sessionId)
+  }
+  let stream
+  try {
+    stream = controller.follow({ address: { kind: 'session', sessionId }, assistantStream: false }, ac.signal)
+  } catch (error) {
+    rt.logger.warn(`telegram-control: 无法订阅会话流 ${error?.message || error}`)
+    drop()
+    return
+  }
+  try {
+    for await (const frame of stream) {
+      if (ac.signal.aborted) break
+      if (!frame) continue
+      if (frame.type === 'snapshot') {
+        state.cursor = Number(frame.cursor) || 0
+        continue
+      }
+      if (frame.type !== 'event') continue
+      const event = frame.event
+      const seq = Number(event?.seq)
+      if (!Number.isFinite(seq) || seq <= state.cursor) continue
+      state.cursor = seq
+      await onSessionEvent(rt, chat, event, state)
+    }
+  } catch (error) {
+    if (!ac.signal.aborted) rt.logger.warn(`telegram-control: 会话流中断 ${error?.message || error}`)
+  } finally {
+    drop()
+  }
+}
+
+function stopWatcher(chat, sessionId) {
+  const state = chat.watchers.get(sessionId)
+  if (!state) return false
+  state.ac.abort()
+  chat.watchers.delete(sessionId)
+  chat.activeTurns.delete(sessionId)
+  return true
+}
+
+/** 兼容旧调用：确保主会话被订阅。 */
+function ensureFollower(rt, chat) {
+  if (!chat.sessionId) return
+  ensureWatcher(rt, chat, chat.sessionId, chat.sessionTitle ?? '')
 }
 
 function blocksText(content) {
@@ -1653,17 +1707,31 @@ async function pulseThinking(rt, chatId, force = false) {
   await sendTyping(rt, chatId)
 }
 
-async function onSessionEvent(rt, chat, event) {
+/**
+ * 一个聊天可能同时订阅多个会话：多开时每条消息前面带上「哪个会话」，
+ * 免得两个会话的回答混在一起分不清。
+ */
+function sessionTag(chat, state) {
+  if (chat.watchers.size <= 1 || !state) return ''
+  const label = state.title || shortId(state.sessionId)
+  return `🏷 ${label}`
+}
+
+async function onSessionEvent(rt, chat, event, state) {
+  const tag = sessionTag(chat, state)
+  const mark = (text) => (tag ? `${tag}\n${text}` : text)
   switch (event.type) {
     case 'assistant/message': {
       const content = event.data?.message?.content
       // 思考过程默认不上屏：只有显式 /reasoning on 才转发
       if (rt.cfg.forwardReasoning) {
         const thinking = reasoningText(content)
-        if (thinking.length > 0) await sendText(rt, chat.id, `${t(rt, 'reasoning.prefix')}\n${clip(thinking, 3500)}`)
+        if (thinking.length > 0) {
+          await sendText(rt, chat.id, mark(`${t(rt, 'reasoning.prefix')}\n${clip(thinking, 3500)}`))
+        }
       }
       const text = blocksText(content)
-      if (text.length > 0) await sendText(rt, chat.id, text)
+      if (text.length > 0) await sendText(rt, chat.id, mark(text))
       return
     }
     case 'assistant/live-chunk':
@@ -1680,8 +1748,8 @@ async function onSessionEvent(rt, chat, event) {
     }
     case 'turn/start':
     case 'step/start': {
-      // 一轮开始就把心跳挂上：只要 DSH 还在干活，TG 顶部就一直是「正在输入…」，
-      // 远程看一眼就知道机器没闲着。
+      // 任意一个被订阅的会话在跑，心跳就亮着：多开时只要还有一个在干活就不熄灭。
+      if (state) chat.activeTurns.add(state.sessionId)
       startThinkingHeartbeat(rt, chat.id)
       return
     }
@@ -1701,13 +1769,14 @@ async function onSessionEvent(rt, chat, event) {
         rt.logger.info(`telegram-control: 工具失败（未推送）：${clip(line, 200)}`)
         return
       }
-      await sendText(rt, chat.id, `⚠️ ${t(rt, 'tool.failed', { detail: clip(line, 200) })}`)
+      await sendText(rt, chat.id, mark(`⚠️ ${t(rt, 'tool.failed', { detail: clip(line, 200) })}`))
       return
     }
     case 'turn/end': {
-      stopThinkingHeartbeat(rt, chat.id)
+      if (state) chat.activeTurns.delete(state.sessionId)
+      if (chat.activeTurns.size === 0) stopThinkingHeartbeat(rt, chat.id)
       const reason = event.data?.reason ?? { kind: 'completed' }
-      await sendText(rt, chat.id, describeTurnEnd(reason))
+      await sendText(rt, chat.id, mark(describeTurnEnd(reason)))
       return
     }
     case 'approval/request': {
@@ -2285,6 +2354,8 @@ const BOT_COMMANDS = [
   'sessions',
   'new',
   'use',
+  'watch',
+  'unwatch',
   'info',
   'cancel',
   'fork',
@@ -2317,6 +2388,7 @@ const BOT_COMMANDS = [
   'lock',
   'sleep',
   'lang',
+  'about',
 ]
 
 let commandsInFlight = null
@@ -2418,6 +2490,17 @@ async function runCommand(rt, chat, command, args) {
     case 'version':
       await sendText(rt, chat.id, `dsh-telegram-control ${version}\nNode ${process.version}`)
       return
+    case 'about': {
+      const body = t(rt, 'about.body', {
+        version,
+        node: process.version,
+        author: 'pingmike2',
+        repo: 'https://github.com/pingmike2/dsh-telegram-control',
+        issues: 'https://github.com/pingmike2/dsh-telegram-control/issues',
+      })
+      await sendText(rt, chat.id, body)
+      return
+    }
     case 'sessions': {
       const reply = await sessionsText(rt, chat)
       if (typeof reply === 'string') await sendText(rt, chat.id, reply)
@@ -2428,7 +2511,7 @@ async function runCommand(rt, chat, command, args) {
       const parsed = await parseNewArgs(rt, chat, args)
       stopFollower(chat)
       chat.sessionId = undefined
-      chat.cursor = 0
+      chat.sessionTitle = ''
       if (parsed.cwd) chat.cwd = parsed.cwd
       try {
         const sessionId = await ensureSession(rt, chat)
@@ -2465,16 +2548,79 @@ async function runCommand(rt, chat, command, args) {
         await sendText(rt, chat.id, t(rt, 'use.usage'))
         return
       }
-      stopFollower(chat)
+      // 多会话订阅：/use 只切换「主会话」（prompt 的接收方），
+      // 其他已订阅会话继续留在列表里，用 /unwatch 单独关。
       chat.sessionId = resolved.sessionId
-      chat.cursor = 0
+      chat.sessionTitle = resolved.title || ''
+      ensureWatcher(rt, chat, resolved.sessionId, resolved.title || '')
       scheduleSave(rt)
-      ensureFollower(rt, chat)
+      const extra =
+        chat.watchers.size > 1 ? `\n${t(rt, 'watch.switched', { count: chat.watchers.size })}` : ''
       await sendText(
         rt,
         chat.id,
-        `${t(rt, 'use.bound', { title: resolved.title || shortId(resolved.sessionId) })}\n${resolved.sessionId}`,
+        `${t(rt, 'use.bound', { title: resolved.title || shortId(resolved.sessionId) })}\n${resolved.sessionId}${extra}`,
       )
+      return
+    }
+    case 'watch':
+    case 'watching': {
+      const list = watchedText(rt, chat)
+      if (args.trim().length === 0) {
+        await sendText(rt, chat.id, list)
+        return
+      }
+      const resolved = await resolveSessionTarget(rt, chat, args)
+      if (resolved?.candidates?.length) {
+        await sendText(rt, chat.id, sessionCandidatesText(rt, resolved.candidates))
+        return
+      }
+      if (!resolved?.sessionId) {
+        await sendText(rt, chat.id, `${t(rt, 'watch.usage')}\n\n${list}`)
+        return
+      }
+      if (chat.watchers.size >= MAX_WATCHERS && !chat.watchers.has(resolved.sessionId)) {
+        await sendText(rt, chat.id, t(rt, 'watch.limit', { count: MAX_WATCHERS }))
+        return
+      }
+      const existed = chat.watchers.has(resolved.sessionId)
+      ensureWatcher(rt, chat, resolved.sessionId, resolved.title || '')
+      scheduleSave(rt)
+      await sendText(
+        rt,
+        chat.id,
+        existed
+          ? t(rt, 'watch.already', { title: resolved.title || shortId(resolved.sessionId) })
+          : t(rt, 'watch.added', { title: resolved.title || shortId(resolved.sessionId) }),
+      )
+      return
+    }
+    case 'unwatch': {
+      const value = args.trim()
+      if (value.length === 0) {
+        await sendText(rt, chat.id, watchedText(rt, chat))
+        return
+      }
+      if (/^(all|全部|\*)$/i.test(value)) {
+        stopFollower(chat)
+        scheduleSave(rt)
+        await sendText(rt, chat.id, t(rt, 'watch.cleared'))
+        return
+      }
+      const resolved = await resolveSessionTarget(rt, chat, value)
+      const target = resolved?.sessionId || value
+      const title = chat.watchers.get(target)?.title || resolved?.title || shortId(target)
+      if (!stopWatcher(chat, target)) {
+        await sendText(rt, chat.id, t(rt, 'watch.notWatching', { title }))
+        return
+      }
+      if (chat.sessionId === target) {
+        const next = [...chat.watchers.keys()][0]
+        chat.sessionId = next
+        chat.sessionTitle = next ? (chat.watchers.get(next)?.title ?? '') : ''
+      }
+      scheduleSave(rt)
+      await sendText(rt, chat.id, t(rt, 'watch.removed', { title }))
       return
     }
     case 'info':
@@ -2542,7 +2688,7 @@ async function runCommand(rt, chat, command, args) {
         const value = await controller.fork({ sessionId: chat.sessionId })
         stopFollower(chat)
         chat.sessionId = value?.sessionId
-        chat.cursor = 0
+        chat.sessionTitle = ''
         scheduleSave(rt)
         ensureFollower(rt, chat)
         await sendText(rt, chat.id, `🌿 已分叉并绑定\n${chat.sessionId}`)
@@ -2741,6 +2887,8 @@ async function statusText(rt, chat) {
   const session = chat.sessionId
     ? `${(await sessionTitleOf(rt, chat.sessionId)) || t(rt, 'status.untitled')} · ${shortId(chat.sessionId)}`
     : t(rt, 'status.unbound')
+  const watching =
+    chat.watchers.size > 1 ? t(rt, 'status.watching', { count: chat.watchers.size }) : ''
   const pending = rt.power?.pending
   return t(rt, 'status.body', {
     state: rt.paused ? t(rt, 'status.paused') : t(rt, 'status.running'),
@@ -2751,6 +2899,7 @@ async function statusText(rt, chat) {
     count: liveCount,
     running,
     session,
+    watching,
     cwd: chatDirectory(rt, chat),
     approvals: onOff(rt.approvalsEnabled),
     questions: onOff(rt.questionsEnabled),
@@ -2780,17 +2929,23 @@ async function sessionsText(rt, chat) {
     const items = all.slice(0, 25)
     if (items.length === 0) return t(rt, 'sessions.empty')
     chat.lastList = items.map((item) => ({ sessionId: item.sessionId, title: item.title }))
-    const lines = [t(rt, 'sessions.header')]
+    // 每个会话两行：第一行「序号 + 标记 + 标题」，第二行单独放**完整** sessionId。
+    // ID 那一行没有空格，长按就能整段复制，粘到 /use、/watch、Web UI 里都能直接用。
+    const lines = [t(rt, 'sessions.header'), t(rt, 'sessions.copyHint')]
     items.forEach((item, index) => {
-      const marks = [item.running ? '▶️' : '·', item.sessionId === chat.sessionId ? '📌' : '']
+      const watching = chat.watchers.has(item.sessionId)
+      const marks = [
+        item.running ? '▶️' : '',
+        item.sessionId === chat.sessionId ? '📌' : watching ? '👁' : '',
+      ]
         .filter(Boolean)
-        .join('')
-      lines.push(`${index + 1}. ${marks} ${item.title || t(rt, 'sessions.untitled')}  ${shortId(item.sessionId)}`)
-      const detail = [item.cwd, formatTime(item.updatedAt)].filter((v) => typeof v === 'string' && v.length > 0)
-      if (detail.length > 0) lines.push(`    ${detail.join(' · ')}`)
+        .join(' ')
+      lines.push(`${index + 1}. ${marks ? `${marks} ` : ''}${item.title || t(rt, 'sessions.untitled')}`)
+      lines.push(item.sessionId)
     })
     const rows = items.slice(0, 12).map((item, index) => {
-      const label = `${item.sessionId === chat.sessionId ? '📌 ' : ''}${index + 1}. ${item.title || shortId(item.sessionId)}`
+      const flag = item.sessionId === chat.sessionId ? '📌 ' : chat.watchers.has(item.sessionId) ? '👁 ' : ''
+      const label = `${flag}${index + 1}. ${item.title || shortId(item.sessionId)}`
       return [{ text: label.slice(0, 60), callback_data: `s:${index + 1}` }]
     })
     const extra = rows.length > 0 ? { reply_markup: { inline_keyboard: rows } } : undefined
@@ -2896,6 +3051,24 @@ function sessionCandidatesText(rt, candidates) {
   return lines.join('\n')
 }
 
+/** 一个聊天同时能订阅几个会话。 */
+const MAX_WATCHERS = 5
+
+/** 列出当前订阅的会话（📌 = 主会话，prompt 发给它）。 */
+function watchedText(rt, chat, extra = '') {
+  const ids = [...chat.watchers.keys()]
+  if (ids.length === 0) return t(rt, 'watch.none')
+  const lines = [t(rt, 'watch.header', { count: ids.length, max: MAX_WATCHERS })]
+  ids.forEach((id, index) => {
+    const state = chat.watchers.get(id)
+    const primary = id === chat.sessionId
+    const marks = [primary ? '📌' : '👁', chat.activeTurns.has(id) ? '▶️' : ''].filter(Boolean).join('')
+    lines.push(`${index + 1}. ${marks} ${state?.title || t(rt, 'sessions.untitled')}  ${shortId(id)}`)
+  })
+  if (extra) lines.push('', extra)
+  return lines.join('\n')
+}
+
 async function sessionTitleOf(rt, sessionId) {
   if (!sessionId) return ''
   try {
@@ -2921,18 +3094,22 @@ async function infoText(rt, chat) {
     const listed = Array.isArray(items) ? items.find((item) => item.sessionId === chat.sessionId) : null
     const title = normalizeTitle(meta?.title) || listed?.title || ''
     const tail = events.slice(-5).map((event) => `${event?.seq}:${event?.type}`)
-    return t(rt, 'info.body', {
-      title: title || t(rt, 'info.untitled'),
-      id: chat.sessionId,
-      cwd: meta?.cwd ?? listed?.cwd ?? chatDirectory(rt, chat),
-      preset: meta?.agentPreset ?? 'default',
-      state: `${listed?.running ? t(rt, 'info.running') : t(rt, 'info.idle')}${
-        listed?.updatedAt ? t(rt, 'info.updated', { time: formatTime(listed.updatedAt) }) : ''
-      }`,
-      created: formatTime(meta?.createdAt),
-      events: events.length,
-      tail: tail.join(' → ') || t(rt, 'info.emptyTail'),
-    })
+    const watched =
+      chat.watchers.size > 0 ? `\n${t(rt, 'info.watched', { count: chat.watchers.size, max: MAX_WATCHERS })}` : ''
+    return (
+      t(rt, 'info.body', {
+        title: title || t(rt, 'info.untitled'),
+        id: chat.sessionId,
+        cwd: meta?.cwd ?? listed?.cwd ?? chatDirectory(rt, chat),
+        preset: meta?.agentPreset ?? 'default',
+        state: `${listed?.running ? t(rt, 'info.running') : t(rt, 'info.idle')}${
+          listed?.updatedAt ? t(rt, 'info.updated', { time: formatTime(listed.updatedAt) }) : ''
+        }`,
+        created: formatTime(meta?.createdAt),
+        events: events.length,
+        tail: tail.join(' → ') || t(rt, 'info.emptyTail'),
+      }) + watched
+    )
   } catch (error) {
     return t(rt, 'info.failed', { error: error?.message || error })
   }

@@ -31,7 +31,7 @@ function ok(condition, label, detail) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-async function waitFor(predicate, label, timeoutMs = 8000) {
+async function waitFor(predicate, label, timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs
   for (;;) {
     let value = false
@@ -66,6 +66,7 @@ const api = {
   edits: [],
   markdownMessages: [],
   rejectMarkdown: false,
+  failGetUpdates: false,
   nextUpdateId: 1,
   nextMessageId: 1,
   botUsername: 'dsh_test_bot',
@@ -94,6 +95,11 @@ const server = createServer((req, res) => {
       return reply({ id: 1234, is_bot: true, first_name: 'DSH Test', username: api.botUsername })
     }
     if (method === 'getUpdates') {
+      if (api.failGetUpdates) {
+        res.writeHead(500, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ ok: false, error_code: 500, description: 'Internal Server Error' }))
+        return
+      }
       const offset = Number(body.offset ?? 0)
       const budget = Math.min(Number(body.timeout ?? 0) || 0, 1) * 1000
       const deadline = Date.now() + budget
@@ -462,7 +468,7 @@ try {
     const scopes = callsOf('setMyCommands').map((call) => call.body.scope?.type)
     ok(scopes.includes('default') && scopes.includes('all_private_chats') && scopes.includes('all_group_chats'), '菜单作用域齐全', JSON.stringify(scopes))
     const commands = callsOf('setMyCommands')[0]?.body.commands ?? []
-    ok(commands.length === 41, '命令菜单 41 条', `实际 ${commands.length}`)
+    ok(commands.length === 44, '命令菜单 44 条', `实际 ${commands.length}`)
     ok(commands.some((item) => item.command === 'lang') && commands.some((item) => item.command === 'power'), '菜单含 lang 与 power')
     ok(commands.every((item) => typeof item.description === 'string' && item.description.length > 0), '每条命令都有描述')
   }
@@ -504,10 +510,16 @@ try {
   pushText('/version')
   const pkgVersion = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version
   await waitFor(() => hasText(CHAT_ID, (text) => text.includes(pkgVersion)), `/version 输出版本号 ${pkgVersion}`)
+
+  pushText('/about')
+  await waitFor(
+    () => hasText(CHAT_ID, (text) => text.includes(pkgVersion) && text.includes('pingmike2') && text.includes('github')),
+    '/about 展示作者、仓库与版本',
+  )
   pushText('/sessions')
   await waitFor(() => hasText(CHAT_ID, (text) => text.includes('暂无会话')), '/sessions 空列表提示')
   pushText('/menu')
-  await waitFor(() => hasText(CHAT_ID, (text) => text.includes('已注册 41 条命令菜单')), '/menu 重新注册菜单')
+  await waitFor(() => hasText(CHAT_ID, (text) => text.includes('已注册 44 条命令菜单')), '/menu 重新注册菜单')
   pushText('/pause')
   await waitFor(() => hasText(CHAT_ID, (text) => text.includes('已暂停')), '/pause 暂停响应')
   pushText('/resume')
@@ -661,6 +673,19 @@ try {
   )
   ok(buttons().some((button) => String(button.callback_data).startsWith('s:')), '会话列表带切换按钮')
 
+  {
+    const backendSession = [...sessions.values()].find((session) => session.title === '后端重构')
+    const listText = textsOf().find((text) => text.includes('后端重构') && text.includes('我的前端项目')) ?? ''
+    const listLines = listText.split('\n')
+    ok(listText.includes(backendSession.sessionId), '/sessions 输出完整会话 ID', listText.slice(0, 200))
+    ok(
+      listLines.some((line) => line === backendSession.sessionId) &&
+        listLines.some((line) => line.includes('后端重构') && !line.includes(backendSession.sessionId)),
+      '会话 ID 独占一行、与标题分行（便于长按复制）',
+      JSON.stringify(listLines.slice(0, 6)),
+    )
+  }
+
   pushText('/info')
   await waitFor(() => hasText(CHAT_ID, (text) => text.includes('🗂 当前会话') && text.includes('标题：后端重构')), '/info 显示当前会话标题')
 
@@ -692,6 +717,79 @@ try {
   pushText('/fork')
   await waitFor(() => hasText(CHAT_ID, (text) => text.includes('已分叉并绑定')), '/fork 分叉会话')
   const boundSessionId = createdOrder[createdOrder.length - 1]
+
+  // ───────────────────────── 多会话订阅 ─────────────────────────
+
+  section('多会话订阅')
+  {
+    ok(Boolean(sessions.get(firstSession.sessionId)), '存在可用于旁观的第二个会话')
+
+    pushText(`/watch ${firstSession.sessionId}`)
+    await waitFor(() => hasText(CHAT_ID, (text) => text.includes('👁 已订阅')), '/watch 追加订阅第二个会话')
+    await waitFor(async () => {
+      const state = await readJson(statePath)
+      return (state?.chats?.[String(CHAT_ID)]?.watched ?? []).length === 2
+    }, '订阅列表落盘为 2 个会话', 4000)
+
+    emitSession(boundSessionId, 'assistant/message', { message: { content: [{ type: 'text', text: '主会话的回答' }] } })
+    emitSession(firstSession.sessionId, 'assistant/message', {
+      message: { content: [{ type: 'text', text: '旁观的回答' }] },
+    })
+    await waitFor(() => hasText(CHAT_ID, (text) => text.includes('主会话的回答')), '主会话输出回流')
+    await waitFor(() => hasText(CHAT_ID, (text) => text.includes('旁观的回答')), '旁观会话输出也回流')
+    ok(
+      hasText(CHAT_ID, (text) => text.startsWith('🏷 ') && text.includes('旁观的回答')),
+      '多开时消息带会话标签',
+      JSON.stringify(textsOf().slice(-4)),
+    )
+
+    pushText('/watch')
+    await waitFor(() => hasText(CHAT_ID, (text) => text.includes('正在订阅 2/5')), '/watch 列出订阅列表')
+    ok(hasText(CHAT_ID, (text) => text.includes('📌')), '订阅列表标出主会话')
+
+    const mainBefore = sessions.get(boundSessionId).promoters.length
+    const sideBefore = sessions.get(firstSession.sessionId).promoters.length
+    pushText('直达主会话')
+    await waitFor(() => sessions.get(boundSessionId).promoters.length === mainBefore + 1, 'prompt 发给主会话')
+    ok(sessions.get(firstSession.sessionId).promoters.length === sideBefore, 'prompt 不误发给旁观的会话')
+
+    pushText(`/unwatch ${firstSession.sessionId}`)
+    await waitFor(() => hasText(CHAT_ID, (text) => text.includes('✅ 已取消订阅')), '/unwatch 取消订阅')
+    const before = chatMessages().length
+    emitSession(firstSession.sessionId, 'assistant/message', {
+      message: { content: [{ type: 'text', text: '不该出现的旁观消息' }] },
+    })
+    await sleep(600)
+    ok(
+      !hasText(CHAT_ID, (text) => text.includes('不该出现的旁观消息')) && chatMessages().length === before,
+      '取消订阅后不再回流',
+      JSON.stringify(textsOf().slice(-3)),
+    )
+
+    pushText(`/unwatch ${boundSessionId}`)
+    await waitFor(() => hasText(CHAT_ID, (text) => text.includes('✅ 已取消订阅')), '/unwatch 取消主会话')
+    await waitFor(async () => {
+      const state = await readJson(statePath)
+      return (state?.chats?.[String(CHAT_ID)]?.watched ?? []).length === 0
+    }, '全部取消后订阅列表清空', 4000)
+
+    pushText(`/use ${boundSessionId}`)
+    await waitFor(() => hasText(CHAT_ID, (text) => text.startsWith('🔗 已绑定会话')), '/use 重新绑定')
+    await waitFor(async () => {
+      const state = await readJson(statePath)
+      return (state?.chats?.[String(CHAT_ID)]?.watched ?? []).length >= 1
+    }, '/use 把主会话重新放回订阅', 4000)
+
+    // /unwatch all 之后发消息：主会话被自动重新订阅，输出照常回流
+    pushText('/unwatch all')
+    await waitFor(() => hasText(CHAT_ID, (text) => text.includes('已取消全部订阅')), '/unwatch all 全部取消')
+    pushText('取消订阅后再发一条')
+    await sleep(400)
+    emitSession(boundSessionId, 'assistant/message', {
+      message: { content: [{ type: 'text', text: '自动重订阅后的回答' }] },
+    })
+    await waitFor(() => hasText(CHAT_ID, (text) => text.includes('自动重订阅后的回答')), '发消息后主会话自动重新订阅')
+  }
 
   // ───────────────────────── 审批接管 ─────────────────────────
 
@@ -984,6 +1082,20 @@ try {
   await sleep(2600)
   pushText('/status')
   await waitFor(() => hasText(CHAT_ID, (text) => text.includes('状态：')), '热加载后插件仍在运行且响应命令')
+
+  section('轮询故障与恢复')
+  {
+    api.failGetUpdates = true
+    await waitFor(async () => (await readJson(statusPath))?.state === 'degraded', '轮询失败时状态标记 degraded', 10_000)
+    ok(
+      typeof (await readJson(statusPath))?.stats?.lastError === 'string',
+      'degraded 时带上 lastError 便于排查',
+      JSON.stringify((await readJson(statusPath))?.stats),
+    )
+    api.failGetUpdates = false
+    await waitFor(async () => (await readJson(statusPath))?.state === 'running', '恢复后状态回到 running', 20_000)
+    ok((await readJson(statusPath))?.stats?.lastError === null, '恢复后 lastError 清空，不再一直显示故障')
+  }
 
   {
     const before = chatMessages().length

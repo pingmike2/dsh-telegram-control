@@ -1,11 +1,11 @@
 {
-  "$meta": { "language": "zh", "label": "简体中文" },
-
+  "$meta": {
+    "language": "zh",
+    "label": "简体中文"
+  },
   "bot.shortDescription": "用 Telegram 远程操控 DeepSeek Harness：会话、命令、文件、审批。",
   "bot.description": "把 DeepSeek Harness 搬到手机上。\n\n· 直接发文本即可和 Agent 对话，输出实时回流\n· /sessions 查看会话，/new 新建，/use 绑定\n· /shell /ls /read /write 直接控制系统\n· 工具审批与提问可用内联按钮点选\n· /plugins /install 管理 DSH 插件\n· /power /shutdown /reboot 远程关机重启",
-
-  "help.body": "🤖 DSH Telegram 控制台\n\n【会话】\n/sessions 列出会话（点按钮直接切换）\n/new [目录] [| 标题] 新建会话并命名\n/use <序号|会话ID|标题> 切换会话（标题支持模糊）\n/info 当前会话详情\n/cancel 取消当前回合\n/fork 分叉当前会话\n/rename <标题> 给当前会话改名\n\n【对话】\n直接发文本 → 下发 prompt，Agent 输出自动回流\n/models 列出可选模型\n/model <provider> <model> 切换模型\n/presets 列出 Agent preset\n\n【直接控制】\n/shell <命令> 在会话目录执行命令\n/cd <目录> 切换目录 · /pwd 显示目录\n/ls [路径] · /read <路径> · /write <路径>⏎内容\n/tools 列出可用工具\n/tool <名称> [JSON 参数] 直接执行工具\n\n【审批与提问】\n/approvals on|off 接管工具审批\n/questions on|off 接管 ask_user_question\n/reasoning on|off 是否把思考过程发到 Telegram（默认只发最终回答）\n\n【插件】\n/plugins · /plugin enable|disable <patchId>\n/bundles · /install <包名或路径> · /uninstall <名称>\n\n【主机控制】\n/power 主机与电源状态\n/shutdown [秒|now] 关机（默认 60 秒）\n/reboot [秒|now] 重启\n/cancel 取消回合，并撤销计划中的关机\n/lock 锁屏 · /sleep 睡眠 · /hibernate 休眠\n\n【其它】\n/status · /pause · /resume · /myid · /version · /menu · /lang zh|en\n\n💡 输入 / 即可弹出命令菜单（若没出现，发一次 /menu 重新注册）",
-
+  "help.body": "🤖 DSH Telegram 控制台\n\n【会话】\n/sessions 列出会话（点按钮直接切换）\n/new [目录] [| 标题] 新建会话并命名\n/use <序号|会话ID|标题> 切换主会话（标题支持模糊）\n/watch <序号|ID|标题> 同时订阅多个会话，只看不发\n/unwatch <序号|ID|标题|all> 取消订阅\n/info 当前会话详情\n/cancel 取消当前回合\n/fork 分叉当前会话\n/rename <标题> 给当前会话改名\n\n【对话】\n直接发文本 → 下发 prompt，Agent 输出自动回流\n/models 列出可选模型\n/model <provider> <model> 切换模型\n/presets 列出 Agent preset\n\n【直接控制】\n/shell <命令> 在会话目录执行命令\n/cd <目录> 切换目录 · /pwd 显示目录\n/ls [路径] · /read <路径> · /write <路径>⏎内容\n/tools 列出可用工具\n/tool <名称> [JSON 参数] 直接执行工具\n\n【审批与提问】\n/approvals on|off 接管工具审批\n/questions on|off 接管 ask_user_question\n/reasoning on|off 是否把思考过程发到 Telegram（默认只发最终回答）\n\n【插件】\n/plugins · /plugin enable|disable <patchId>\n/bundles · /install <包名或路径> · /uninstall <名称>\n\n【主机控制】\n/power 主机与电源状态\n/shutdown [秒|now] 关机（默认 60 秒）\n/reboot [秒|now] 重启\n/cancel 取消回合，并撤销计划中的关机\n/lock 锁屏 · /sleep 睡眠 · /hibernate 休眠\n\n【其它】\n/status · /pause · /resume · /myid · /version · /menu · /lang zh|en · /about\n\n💡 输入 / 即可弹出命令菜单（若没出现，发一次 /menu 重新注册）",
   "menu.start": "开始使用，显示功能总览",
   "menu.help": "查看全部命令说明",
   "menu.menu": "刷新 / 命令菜单",
@@ -47,9 +47,10 @@
   "menu.lock": "锁定屏幕",
   "menu.sleep": "睡眠",
   "menu.lang": "切换界面语言：/lang zh|en",
-
+  "menu.about": "关于：作者、仓库与版本",
+  "about.body": "🤖 dsh-telegram-control {version}\n\nTelegram 远程控制台：会话、prompt、shell、工具、审批、电源，全套都能在 TG 里操作。\n\n· 作者：{author}\n· 源码：{repo}\n· 版本：{version}（Node {node}）\n· 遇到问题：{issues}\n\n按 /help 查看全部命令。",
   "status.header": "🛰 DSH Telegram 控制台",
-  "status.body": "🛰 DSH Telegram 控制台\n状态：{state} · v{version}\nBot：{bot}\n命令菜单：{commands} 条{commandsHint}\n会话数：{count}（运行中 {running}）\n当前会话：{session}\n工作目录：{cwd}\n审批接管：{approvals} · 提问接管：{questions}\n思考转发：{reasoning}\n电源控制：{power} · 计划中：{pendingPower}\n语言：{lang}\n授权：chat={chats} user={users}\n自 {since} 起：update={updates} 消息={messages} 错误={errors}\n代理：{proxy}\n配置页：{configUrl}\n配置文件：{configPath}\n运行状态：{statusPath}",
+  "status.body": "🛰 DSH Telegram 控制台\n状态：{state} · v{version}\nBot：{bot}\n命令菜单：{commands} 条{commandsHint}\n会话数：{count}（运行中 {running}）\n当前会话：{session}{watching}\n工作目录：{cwd}\n审批接管：{approvals} · 提问接管：{questions}\n思考转发：{reasoning}\n电源控制：{power} · 计划中：{pendingPower}\n语言：{lang}\n授权：chat={chats} user={users}\n自 {since} 起：update={updates} 消息={messages} 错误={errors}\n代理：{proxy}\n配置页：{configUrl}\n配置文件：{configPath}\n运行状态：{statusPath}",
   "status.running": "✅ 运行",
   "status.paused": "⏸ 暂停",
   "status.commandsHint": "（发 /menu 重新注册）",
@@ -61,7 +62,6 @@
   "status.powerAllowed": "允许",
   "status.powerDenied": "禁用",
   "status.none": "无",
-
   "info.body": "🗂 当前会话\n标题：{title}\nID：{id}\n目录：{cwd}\npreset：{preset}\n状态：{state}\n创建：{created}\n事件：{events} 条\n最近：{tail}",
   "info.untitled": "（未命名，发 /rename <标题> 命名）",
   "info.noSession": "当前没有绑定会话。",
@@ -70,12 +70,11 @@
   "info.running": "运行中",
   "info.updated": " · 更新于 {time}",
   "info.emptyTail": "—",
-
   "sessions.header": "📋 会话（点按钮切换，或 /use <序号|ID|标题>）：",
+  "sessions.copyHint": "👇 每个标题下面那行就是完整会话 ID（无空格，长按即可整段复制）",
   "sessions.empty": "暂无会话。用 /new [目录 | 标题] 新建一个。",
   "sessions.untitled": "（未命名）",
   "sessions.unavailable": "sessionController 不可用。",
-
   "power.body": "🔌 主机与电源\n主机：{host}（{platform} {arch}）\n本进程已运行：{uptime}\n内存合计：{memory} GB · CPU：{cores} 核\n电源权限：{allowed}\n计划中：{pending}\n上次操作：{last}\n\n用法：/shutdown [秒|now] · /reboot [秒|now] · /cancel · /lock · /sleep · /hibernate",
   "power.allowed": "允许",
   "power.denied": "已禁用（allowPower=false）",
@@ -107,50 +106,53 @@
   "action.cancel": "取消",
   "suspend.sleep": "睡眠",
   "suspend.hibernate": "休眠",
-
   "cancel.turn": "⏹ 已请求取消当前回合",
   "cancel.turnFailed": "❌ 取消回合失败：{error}",
   "cancel.powerAborted": "✅ 已取消计划中的关机 / 重启",
   "cancel.nothing": "当前没有绑定会话，也没有计划中的关机。",
   "cancel.noPending": "ℹ️ 没有处于计划中的关机/重启",
-
   "reasoning.current": "当前思考过程转发：{state}\n用法：/reasoning on|off\n（默认 off：只把最终回答发到 Telegram，思考只留在 Web UI）",
   "reasoning.on": "🧠 思考过程也会发到这里（会比较吵）",
   "reasoning.off": "🧠 只发最终回答，思考过程不再发到 Telegram",
   "reasoning.prefix": "🧠 思考",
-
   "approvals.current": "当前审批接管：{state}\n用法：/approvals on|off",
   "approvals.set": "🔐 审批接管：{state}",
   "questions.current": "当前提问接管：{state}\n用法：/questions on|off",
   "questions.set": "❓ 提问接管：{state}",
-
   "pause.on": "⏸ 已暂停：新消息只记录不响应，发 /resume 恢复。",
   "pause.off": "▶️ 已恢复响应。",
-
   "myid.body": "chat_id: {chatId}\nuser_id: {userId}\n会话: {session}",
   "myid.unknown": "未知",
   "myid.unbound": "未绑定",
-
   "menu.registered": "✅ 已注册 {count} 条命令菜单。\n在输入框键入 / 就会弹出候选列表；如果客户端还没刷新，切出再切回这个聊天即可。",
   "menu.failed": "❌ 命令注册失败，详见 Host 日志里的 setMyCommands 报错。",
-
   "lang.current": "当前语言：{lang}（可选：{list}）\n用法：/lang zh|en",
   "lang.set": "🌐 语言已切换为 {lang}，命令菜单已重新注册。",
   "lang.invalid": "不支持的语言：{lang}（可选：{list}）",
-
   "new.bound": "🆕 已绑定新会话",
   "new.title": "标题：{title}",
   "new.cwd": "目录：{cwd}",
   "new.hint": "💡 取名：/new 目录 | 标题，或建好后 /rename <标题>",
   "new.failed": "❌ 新建会话失败：{error}",
   "new.renameFailed": "⚠️ 会话已创建，但命名失败：{error}",
-
   "use.bound": "🔗 已绑定会话：{title}",
   "use.usage": "用法：/use <序号|会话ID|标题>\n· /use 3 或 /use #3\n· /use 前端重构（标题，支持模糊）\n· /use 9f3a12（会话 ID 前缀）\n先执行 /sessions 能看到列表和按钮。",
   "use.candidates": "⚠️ 匹配到多个会话，请用序号或更精确的标题：",
-
   "tool.failed": "工具失败：{detail}",
   "rename.usage": "用法：/rename <标题>",
   "rename.done": "✏️ 已改名为：{title}",
-  "rename.failed": "❌ 改名失败：{error}"
+  "rename.failed": "❌ 改名失败：{error}",
+  "menu.watch": "同时订阅多个会话（只看不发）：/watch <序号|ID|标题>",
+  "menu.unwatch": "取消订阅：/unwatch <序号|ID|标题|all>",
+  "watch.header": "👁 正在订阅 {count}/{max} 个会话（📌 = 主会话，prompt 发它）：",
+  "watch.none": "👁 当前没有订阅会话。用 /use 绑定主会话，或 /watch <序号|ID|标题> 追加订阅。",
+  "watch.usage": "用法：/watch <序号|会话ID|标题> 追加订阅；/watch 不带参数查看列表；/unwatch all 全部取消。",
+  "watch.added": "👁 已订阅：{title}（它的输出会一起发到这里，prompt 仍发给主会话）",
+  "watch.already": "👁 已经在订阅：{title}",
+  "watch.removed": "✅ 已取消订阅：{title}",
+  "watch.cleared": "✅ 已取消全部订阅。",
+  "watch.notWatching": "当前没有订阅：{title}",
+  "watch.switched": "（仍在订阅 {count} 个会话，多余的用 /unwatch 关掉）",
+  "watch.limit": "⚠️ 最多同时订阅 {count} 个会话，先 /unwatch 关掉一个。",
+  "info.watched": "订阅：{count}/{max} 个会话（/watch 查看，/unwatch all 全部取消）"
 }

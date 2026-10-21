@@ -1,6 +1,6 @@
 # dsh-telegram-control
 
-**[简体中文](README.md)** | [English](README.en.md)
+**[简体中文](README.md)** | [English](README.en.md) · 作者 [pingmike2](https://github.com/pingmike2) · 仓库 [pingmike2/dsh-telegram-control](https://github.com/pingmike2/dsh-telegram-control)
 
 DSH 的**系统级** Telegram 控制台：装上之后，整个 DeepSeek Harness（所有会话、所有 preset）都能从一个 Telegram Bot 远程操控。
 
@@ -169,13 +169,13 @@ Node 的 `fetch`（undici）**不读 Windows 系统代理**，所以在需要代
 
 ```json
 {
-  "version": "1.4.0",
+  "version": "1.4.1",
   "state": "running",
   "pid": 3900,
   "startedAt": 1792418496591,
   "updatedAt": 1792418496591,
   "bot": "@your_bot",
-  "botCommands": 41,
+  "botCommands": 44,
   "chats": 1,
   "boundSessions": 1,
   "approvalsEnabled": true,
@@ -190,21 +190,38 @@ Node 的 `fetch`（undici）**不读 Windows 系统代理**，所以在需要代
 
 | 分类 | 命令 |
 |---|---|
-| 会话 | `/sessions`（按钮直接切换） `/new [目录] [\| 标题]` `/use <序号\|id\|标题>` `/info` `/cancel` `/fork` `/rename <标题>` |
+| 会话 | `/sessions`（按钮直接切换） `/new [目录] [\| 标题]` `/use <序号\|id\|标题>` `/watch <序号\|id\|标题>` `/unwatch <序号\|id\|标题\|all>` `/info` `/cancel` `/fork` `/rename <标题>` |
 | 对话 | 直接发文本（下发 prompt，最终回答/回合状态回流）、`/models` `/model <provider> <model>` `/presets` |
 | 直接控制 | `/shell <命令>` `/cd` `/pwd` `/ls [路径]` `/read <路径>` `/write <路径>⏎内容` `/tools` `/tool <名称> [JSON]` |
 | 审批/提问 | `/approvals on\|off`（接管工具执行审批，内联按钮）、`/questions on\|off`（接管 `ask_user_question`）、`/reasoning on\|off` |
 | 插件 | `/plugins` `/plugin enable\|disable <patchId>` `/bundles` `/install <包>` `/uninstall <名称>` |
 | 主机 | `/power` `/shutdown [秒\|now]` `/reboot [秒\|now]` `/cancel` `/lock` `/sleep` `/hibernate` |
-| 其它 | `/status` `/menu` `/pause` `/resume` `/myid` `/version` `/lang zh\|en` `/help` |
+| 其它 | `/status` `/menu` `/pause` `/resume` `/myid` `/version` `/lang zh\|en` `/about` `/help` |
 
 ### 会话命名与切换
 
 - **新建时就取名**：`/new 重构登录页` → 建好即调用 `rename`，标题写进会话投影。带目录再加 `|`：`/new F:\work\app | 重构登录页`。没有 `|` 时按内容判断——含路径分隔符或目录真实存在就当目录，否则当标题。
 - **按标题切换**：`/use 重构登录页`（精确 → 不区分大小写），`/use 登录`（唯一命中时模糊匹配），`/use 3` `/use #3`（`/sessions` 的序号），`/use 9f3a12`（sessionId 前缀）。
 - **点按钮切换**：`/sessions` 会附 12 个内联按钮（`s:<序号>`），点一下就绑定，并回一条「已绑定会话：标题」。
+- **复制会话 ID**：`/sessions` 每个会话是「序号 + 标记 + 标题」一行、**完整 sessionId 单独占一行**（`session-133df74f-…`，无空格），长按那一行就能整段复制，粘到 `/use`、`/watch` 或 Web UI 都直接可用。
 - **看标题**：`/info` 显示当前会话的标题/ID/目录/状态/事件数，`/status` 里也有「当前会话：标题 · id」。
 - 匹配到多个会话时不会瞎猜，直接把候选列出来让你用序号或更精确的标题重试；非 ID 形态的字符串（含中文）不会被当成 sessionId。
+
+### 同时盯多个会话
+
+一个聊天可以**同时订阅多个会话**（最多 5 个），输出全都回流到同一个 Telegram 会话里：
+
+| 命令 | 作用 |
+|---|---|
+| `/use <序号\|id\|标题>` | 切换**主会话**——prompt、`/cancel`、`/fork`、`/rename` 都作用在它身上；其他已订阅会话不会被踢掉 |
+| `/watch <序号\|id\|标题>` | 追加订阅一个会话（只看不发），推送时带 `🏷 标题` 前缀防串台 |
+| `/watch` | 列出当前订阅：`📌` 主会话、`👁` 旁听会话、`▶️` 正在干活 |
+| `/unwatch <序号\|id\|标题>` | 取消某一条；若取消的正是主会话，自动回落到剩余的第一个 |
+| `/unwatch all` | 全部取消（等价于恢复「一对一」模式） |
+
+- 只有**主会话**接收 prompt，旁听会话纯输出；两个会话同时干活时，只要还有一个在跑，「正在输入…」就一直亮着。
+- 订阅关系写进状态文件（`watched` 数组），插件重载/DSH 重启后自动恢复，远程监控不会因为一次热重载断掉。
+- `/sessions` 列表里 `📌` 是主会话、`👁` 是旁听会话，一眼看清哪些在盯。
 
 ### 主机电源控制（关机 / 重启 / 锁屏）
 
@@ -278,7 +295,20 @@ npm test          # 等价于 node test/tg-control.test.mjs
 
 本地起一个假的 Bot API（真 http server，走 `getUpdates` 长轮询）+ 假的 Cordis ctx / `sessionController` / `tools` / `pluginManager`，真跑插件：命令菜单注册、鉴权、命令分发、prompt 桥接、流式事件回流、**思考过程不上屏与 typing 节流**、语言切换、shell / 文件 / 工具直调、审批与提问内联按钮、会话命名与切换、电源控制（含二次确认与 `allowPower` 关闭）、配置页 CSRF 与保存、Markdown 渲染与纯文本兜底、热加载、卸载清理。
 
-当前：**141 项断言全部通过**。测试用 `powerExec` 指向 `test/fixtures/fake-shutdown.mjs`，**绝不会真的关机**。
+当前：**166 项断言全部通过**。测试用 `powerExec` 指向 `test/fixtures/fake-shutdown.mjs`，**绝不会真的关机**。
+
+## 版本号约定
+
+版本号只在**末尾追加第 4 段**，不动 major/minor/patch：
+
+```text
+1.4.0 → 1.4.0.1 → 1.4.0.2 → 1.4.0.3 → …
+```
+
+- 日常改动、修 bug、加小功能：跑 `npm run ver`（= `node scripts/bump-version.mjs`），末尾段 +1，四处版本号（`package.json` / `index.js` / 两个 README 的状态示例）一起改，自带一致性自检。
+- 只有**明确要求升级版本**（例如「发 1.5」「打个大版本」）才用 `npm run ver -- --minor`（`1.4.0.6 → 1.5.0`）、`--major`、`--patch`，或 `--set 1.5.0` 直接指定。
+- 想先看会改成什么：`npm run ver -- --dry`。
+- 发版 tag 与版本号同名：`v1.4.0.1`。第 4 段能一直延伸下去，连续迭代不会把 minor 号一路冲高。
 
 ## 设计取舍
 

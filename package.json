@@ -1,6 +1,6 @@
 {
   "name": "dsh-telegram-control",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Telegram bot console for DeepSeek Harness: sessions, prompts, shell, tools, approvals, plugins, power control and i18n.",
   "type": "module",
   "main": "index.js",
@@ -18,7 +18,8 @@
     "README.en.md"
   ],
   "scripts": {
-    "test": "node test/tg-control.test.mjs"
+    "test": "node test/tg-control.test.mjs",
+    "ver": "node scripts/bump-version.mjs"
   },
   "keywords": [
     "dsh",
@@ -28,6 +29,16 @@
     "cordis-plugin"
   ],
   "license": "MIT",
+  "author": {
+    "name": "pingmike2",
+    "url": "https://github.com/pingmike2"
+  },
+  "contributors": [
+    {
+      "name": "pingmike2",
+      "url": "https://github.com/pingmike2"
+    }
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/pingmike2/dsh-telegram-control.git"
